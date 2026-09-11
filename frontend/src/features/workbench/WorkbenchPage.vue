@@ -28,6 +28,7 @@ const editorText = ref('')
 const revisionInstruction = ref('')
 const firstDraftRequirements = ref('')
 const savingSuggestionIds = ref(new Set<string>())
+const suggestionSaveQueues = new Map<string, Promise<void>>()
 const selectionRange = ref<{ start: number; end: number } | null>(null)
 const draftDirty = ref(false)
 const compareLeft = ref('')
@@ -56,7 +57,8 @@ function selectVersion(version: Version) { selectedVersionId.value = version.id;
 function operationMessage(reason: unknown) { return reason instanceof Error ? reason.message : '操作未完成，当前内容已保留，可以重试。' }
 
 async function run(kind: 'analysis' | 'suggestions' | 'draft' | 'regeneration' | 'revision') {
-  if (!task.value || aiBusy.value || operation.value || (kind === 'regeneration' && suggestionsSaving.value)) return
+  const needsSavedSuggestions = ['suggestions', 'draft', 'regeneration'].includes(kind)
+  if (!task.value || aiBusy.value || operation.value || (needsSavedSuggestions && suggestionsSaving.value)) return
   const taskId = task.value.id
   const analysisId = task.value.analysisId
   const snapshot = task.value
@@ -108,13 +110,30 @@ watch([() => task.value?.state, () => queue.items], async () => {
   catch (reason) { operationError.value = operationMessage(reason) }
 })
 
-async function decideSuggestion(item: Suggestion) {
-  if (!task.value || aiBusy.value || savingSuggestionIds.value.has(item.id)) return
+function decideSuggestion(item: Suggestion) {
+  if (!task.value || aiBusy.value) return
   const taskId = task.value.id
+  const itemId = item.id
+  const selected = item.selected
+  const note = item.note
+  const previous = suggestionSaveQueues.get(itemId) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(() => api.decideSuggestion(taskId, itemId, selected, note))
+  suggestionSaveQueues.set(itemId, current)
   savingSuggestionIds.value = new Set(savingSuggestionIds.value).add(item.id)
-  try { await api.decideSuggestion(taskId, item.id, item.selected, item.note) }
-  catch (reason) { operationError.value = operationMessage(reason); await store.refreshCurrent(taskId).catch(() => {}) }
-  finally { const next = new Set(savingSuggestionIds.value); next.delete(item.id); savingSuggestionIds.value = next }
+  void current.then(
+    () => {},
+    (reason) => {
+      if (suggestionSaveQueues.get(itemId) !== current) return
+      operationError.value = operationMessage(reason)
+      void store.refreshCurrent(taskId).catch(() => {})
+    },
+  ).finally(() => {
+    if (suggestionSaveQueues.get(itemId) !== current) return
+    suggestionSaveQueues.delete(itemId)
+    const next = new Set(savingSuggestionIds.value)
+    next.delete(itemId)
+    savingSuggestionIds.value = next
+  })
 }
 async function saveEditedVersion(snapshot: RewriteTask, parent: Version, content: string) {
   if (content === parent.content) return parent
@@ -184,9 +203,9 @@ onMounted(async () => { await store.loadOne(String(route.params.id)); if (task.v
           <section v-else-if="tab === 'suggestions'" class="stage-content">
             <div class="stage-heading suggestions-heading">
               <div><h2>选择优化方案</h2><p>已固定 {{ selectedSuggestions }} 项</p></div>
-              <div class="heading-actions"><UiButton :icon="Sparkles" :loading="operation === 'suggestions'" :disabled="hasFirstDraft || allSuggestionsFixed" @click="run('suggestions')">继续优化方案</UiButton><UiButton variant="primary" :icon="FileText" :loading="operation === (hasFirstDraft ? 'regeneration' : 'draft')" :disabled="suggestionsSaving || (hasFirstDraft && !selectedVersion)" @click="run(hasFirstDraft ? 'regeneration' : 'draft')">{{ hasFirstDraft ? '按当前方案生成新版本' : '生成第一版' }}</UiButton></div>
+              <div class="heading-actions"><UiButton :icon="Sparkles" :loading="operation === 'suggestions'" :disabled="hasFirstDraft || allSuggestionsFixed || suggestionsSaving" @click="run('suggestions')">继续优化方案</UiButton><UiButton variant="primary" :icon="FileText" :loading="operation === (hasFirstDraft ? 'regeneration' : 'draft')" :disabled="suggestionsSaving || (hasFirstDraft && !selectedVersion)" @click="run(hasFirstDraft ? 'regeneration' : 'draft')">{{ hasFirstDraft ? '按当前方案生成新版本' : '生成第一版' }}</UiButton></div>
             </div>
-            <div class="suggestion-groups"><section v-for="priority in (['primary', 'optional'] as const)" :key="priority"><h3>{{ priority === 'primary' ? '优先优化' : '可选优化' }}</h3><label v-for="item in task.suggestions.filter((value) => value.priority === priority)" :key="item.id" class="suggestion-row" :class="{ 'suggestion-fixed': item.selected }"><input v-model="item.selected" type="checkbox" :disabled="savingSuggestionIds.has(item.id)" @change="decideSuggestion(item)" /><span class="custom-check"><Check :size="14" /></span><span><span class="suggestion-title">{{ item.title }}<LockKeyhole v-if="item.selected" :size="13" aria-label="已固定" /></span><small>{{ item.description }}</small><input v-model="item.note" class="suggestion-note" type="text" placeholder="补充备注（可选）" :disabled="savingSuggestionIds.has(item.id)" @blur="decideSuggestion(item)" @click.stop /></span></label></section></div>
+            <div class="suggestion-groups"><section v-for="priority in (['primary', 'optional'] as const)" :key="priority"><h3>{{ priority === 'primary' ? '优先优化' : '可选优化' }}</h3><label v-for="item in task.suggestions.filter((value) => value.priority === priority)" :key="item.id" class="suggestion-row" :class="{ 'suggestion-fixed': item.selected }"><input v-model="item.selected" type="checkbox" @change="decideSuggestion(item)" /><span class="custom-check"><Check :size="14" /></span><span><span class="suggestion-title">{{ item.title }}<LockKeyhole v-if="item.selected" :size="13" aria-label="已固定" /></span><small>{{ item.description }}</small><input v-model="item.note" class="suggestion-note" type="text" placeholder="补充备注（可选）" @blur="decideSuggestion(item)" @click.stop /></span></label></section></div>
             <div class="first-draft-requirements"><UiField v-model="firstDraftRequirements" label="本次成品补充要求" placeholder="例如：不要使用反问句，结尾不需要行动号召" multiline :rows="3" /></div>
           </section>
           <section v-else-if="tab === 'editing'" class="stage-content editing-stage">
