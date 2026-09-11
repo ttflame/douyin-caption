@@ -68,6 +68,19 @@ describe('creative settings mapping', () => {
 })
 
 describe('high-value workflow endpoints', () => {
+  it('generates an idempotency key when randomUUID is unavailable on HTTP pages', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'operation', status: 'queued' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('localStorage', { getItem: () => null })
+    vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => bytes.fill(7) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.analyze('task')
+
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Headers
+    const key = headers.get('Idempotency-Key')
+    expect(key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  })
+
   it('copies a task through the dedicated endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'copied', name: '副本', state: 'draft', source_text: '正文', creative_settings: toCreativeSettings({ ...api.defaultSettings }), created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', finalized_at: null }), { status: 200, headers: { 'content-type': 'application/json' } }))
     vi.stubGlobal('localStorage', { getItem: () => null })
@@ -88,5 +101,23 @@ describe('high-value workflow endpoints', () => {
 
     expect(diff).toContain('+新句')
     expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({ left_version_id: 'left', right_version_id: 'right' })
+  })
+
+  it('regenerates a version from the latest accepted suggestions', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'operation', status: 'queued' }), { status: 202, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('localStorage', { getItem: () => null })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.regenerateFromSuggestions('task', 'version', 'analysis', '保持克制')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/tasks/task/revisions', expect.objectContaining({ method: 'POST' }))
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+      parent_version_id: 'version',
+      scope: 'suggestions',
+      instruction: '保持克制',
+      analysis_id: 'analysis',
+      selection_start: null,
+      selection_end: null,
+    })
   })
 })

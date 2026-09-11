@@ -69,7 +69,7 @@ independently of the submitting request and browser connection. Different member
 - `GET /tasks/{task_id}/suggestions`: read suggestions for the selected analysis, or filter with
   `analysis_id`.
 - `POST /tasks/{task_id}/first-draft`: generate the task's only first draft.
-- `POST /tasks/{task_id}/revisions`: create a full-text or selected-range revision from a parent version.
+- `POST /tasks/{task_id}/revisions`: create a full-text, selected-range, or current-suggestion revision from a parent version.
 - `GET /operations/{operation_id}`: poll operation state and safe error information.
 - `GET /operations`: all queued/running operations and the latest 30 finished operations owned by the current member.
 - `POST /operations/{operation_id}/cancel`: cancel a queued operation; returns `409` if execution has started or finished.
@@ -111,7 +111,7 @@ not call the provider. A failed operation does not prevent the next queued docum
 - `Analysis` contains the seven fixed modules defined in the product requirements.
 - `Suggestion` has priority `primary` or `optional` and references an analysis issue.
 - `Version.kind` is `first_draft`, `ai_revision` or `manual_edit`.
-- `Revision.scope` is `full` or `selection`.
+- `Revision.scope` is `full`, `selection`, or `suggestions`. The `suggestions` scope regenerates from the original text, selected analysis and latest accepted suggestions while retaining version lineage and locked fragments.
 - Repeated suggestions generation preserves accepted records, IDs and member notes and replaces only unselected suggestions in the chosen analysis. When all suggestions are accepted, the operation fails before calling the provider.
 - Locked fragments preserve exact text, punctuation and repeated occurrence counts. Position and relative order may change with the article structure. Offsets count Unicode code points.
 - Revisions that violate preservation constraints fail with `locked_text_changed` and do not create a version. Manual edits that change locked text return `409`; unlock the affected text before editing it.

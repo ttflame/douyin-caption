@@ -1,0 +1,17 @@
+[Unit]
+Description=Douyin Caption FastAPI backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/douyin-caption
+ExecStart=/home/ubuntu/douyin-caption/backend/.venv/bin/uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

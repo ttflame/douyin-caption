@@ -27,6 +27,7 @@ const selectedVersionId = ref('')
 const editorText = ref('')
 const revisionInstruction = ref('')
 const firstDraftRequirements = ref('')
+const savingSuggestionIds = ref(new Set<string>())
 const selectionRange = ref<{ start: number; end: number } | null>(null)
 const draftDirty = ref(false)
 const compareLeft = ref('')
@@ -41,6 +42,7 @@ const selectedVersion = computed(() => task.value?.versions.find((item) => item.
 const hasFirstDraft = computed(() => Boolean(task.value?.versions.some((item) => item.kind === 'first_draft')))
 const selectedSuggestions = computed(() => task.value?.suggestions.filter((item) => item.selected).length ?? 0)
 const allSuggestionsFixed = computed(() => !!task.value?.suggestions.length && selectedSuggestions.value === task.value.suggestions.length)
+const suggestionsSaving = computed(() => savingSuggestionIds.value.size > 0)
 const allSentencesFixed = computed(() => {
   const sentences = sentenceSelections(editorText.value, task.value?.locks ?? [], selectedVersion.value?.id).filter(item => item.text)
   return sentences.length > 0 && sentences.every(sentence => sentence.parts.every(part => part.locked))
@@ -53,8 +55,8 @@ function allowed(id: TabId) { if (id === 'source') return true; if (id === 'anal
 function selectVersion(version: Version) { selectedVersionId.value = version.id; editorText.value = version.content; draftDirty.value = false }
 function operationMessage(reason: unknown) { return reason instanceof Error ? reason.message : '操作未完成，当前内容已保留，可以重试。' }
 
-async function run(kind: 'analysis' | 'suggestions' | 'draft' | 'revision') {
-  if (!task.value || aiBusy.value || operation.value) return
+async function run(kind: 'analysis' | 'suggestions' | 'draft' | 'regeneration' | 'revision') {
+  if (!task.value || aiBusy.value || operation.value || (kind === 'regeneration' && suggestionsSaving.value)) return
   const taskId = task.value.id
   const analysisId = task.value.analysisId
   const snapshot = task.value
@@ -71,6 +73,7 @@ async function run(kind: 'analysis' | 'suggestions' | 'draft' | 'revision') {
     if (kind === 'analysis') await queue.submit(() => api.analyze(taskId))
     if (kind === 'suggestions') await queue.submit(() => api.suggest(taskId, analysisId))
     if (kind === 'draft') await queue.submit(() => api.firstDraft(taskId, analysisId, requirements))
+    if (kind === 'regeneration' && parentVersionId) { const versionId = parentVersionId; await queue.submit(() => api.regenerateFromSuggestions(taskId, versionId, analysisId, requirements)) }
     if (kind === 'revision' && parentVersionId) { const versionId = parentVersionId; await queue.submit(() => api.revise(taskId, { parentVersionId: versionId, instruction, selection })) }
   } catch (reason) { operationError.value = operationMessage(reason) }
   finally { operation.value = '' }
@@ -106,12 +109,12 @@ watch([() => task.value?.state, () => queue.items], async () => {
 })
 
 async function decideSuggestion(item: Suggestion) {
-  if (!task.value || aiBusy.value || operation.value) return
+  if (!task.value || aiBusy.value || savingSuggestionIds.value.has(item.id)) return
   const taskId = task.value.id
-  operation.value = 'suggestion-save'
+  savingSuggestionIds.value = new Set(savingSuggestionIds.value).add(item.id)
   try { await api.decideSuggestion(taskId, item.id, item.selected, item.note) }
   catch (reason) { operationError.value = operationMessage(reason); await store.refreshCurrent(taskId).catch(() => {}) }
-  finally { operation.value = '' }
+  finally { const next = new Set(savingSuggestionIds.value); next.delete(item.id); savingSuggestionIds.value = next }
 }
 async function saveEditedVersion(snapshot: RewriteTask, parent: Version, content: string) {
   if (content === parent.content) return parent
@@ -181,9 +184,9 @@ onMounted(async () => { await store.loadOne(String(route.params.id)); if (task.v
           <section v-else-if="tab === 'suggestions'" class="stage-content">
             <div class="stage-heading suggestions-heading">
               <div><h2>选择优化方案</h2><p>已固定 {{ selectedSuggestions }} 项</p></div>
-              <div class="heading-actions"><UiButton :icon="Sparkles" :loading="operation === 'suggestions'" :disabled="hasFirstDraft || allSuggestionsFixed" @click="run('suggestions')">继续优化方案</UiButton><UiButton variant="primary" :icon="FileText" :loading="operation === 'draft'" :disabled="hasFirstDraft" @click="run('draft')">{{ hasFirstDraft ? '第一版已生成' : '生成第一版' }}</UiButton></div>
+              <div class="heading-actions"><UiButton :icon="Sparkles" :loading="operation === 'suggestions'" :disabled="hasFirstDraft || allSuggestionsFixed" @click="run('suggestions')">继续优化方案</UiButton><UiButton variant="primary" :icon="FileText" :loading="operation === (hasFirstDraft ? 'regeneration' : 'draft')" :disabled="suggestionsSaving || (hasFirstDraft && !selectedVersion)" @click="run(hasFirstDraft ? 'regeneration' : 'draft')">{{ hasFirstDraft ? '按当前方案生成新版本' : '生成第一版' }}</UiButton></div>
             </div>
-            <div class="suggestion-groups"><section v-for="priority in (['primary', 'optional'] as const)" :key="priority"><h3>{{ priority === 'primary' ? '优先优化' : '可选优化' }}</h3><label v-for="item in task.suggestions.filter((value) => value.priority === priority)" :key="item.id" class="suggestion-row" :class="{ 'suggestion-fixed': item.selected }"><input v-model="item.selected" type="checkbox" @change="decideSuggestion(item)" /><span class="custom-check"><Check :size="14" /></span><span><span class="suggestion-title">{{ item.title }}<LockKeyhole v-if="item.selected" :size="13" aria-label="已固定" /></span><small>{{ item.description }}</small><input v-model="item.note" class="suggestion-note" type="text" placeholder="补充备注（可选）" @blur="decideSuggestion(item)" @click.stop /></span></label></section></div>
+            <div class="suggestion-groups"><section v-for="priority in (['primary', 'optional'] as const)" :key="priority"><h3>{{ priority === 'primary' ? '优先优化' : '可选优化' }}</h3><label v-for="item in task.suggestions.filter((value) => value.priority === priority)" :key="item.id" class="suggestion-row" :class="{ 'suggestion-fixed': item.selected }"><input v-model="item.selected" type="checkbox" :disabled="savingSuggestionIds.has(item.id)" @change="decideSuggestion(item)" /><span class="custom-check"><Check :size="14" /></span><span><span class="suggestion-title">{{ item.title }}<LockKeyhole v-if="item.selected" :size="13" aria-label="已固定" /></span><small>{{ item.description }}</small><input v-model="item.note" class="suggestion-note" type="text" placeholder="补充备注（可选）" :disabled="savingSuggestionIds.has(item.id)" @blur="decideSuggestion(item)" @click.stop /></span></label></section></div>
             <div class="first-draft-requirements"><UiField v-model="firstDraftRequirements" label="本次成品补充要求" placeholder="例如：不要使用反问句，结尾不需要行动号召" multiline :rows="3" /></div>
           </section>
           <section v-else-if="tab === 'editing'" class="stage-content editing-stage">

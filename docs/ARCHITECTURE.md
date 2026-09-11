@@ -53,7 +53,7 @@ Rules:
 
 - A task has exactly one first draft.
 - Another independent first draft requires a new task.
-- Revision versions are immutable and form a parent-child tree.
+- Revision versions are immutable and form a parent-child tree. A revision may modify the current text or regenerate from the original text and the latest accepted optimization suggestions.
 - A finalized version remains immutable; further work creates a child revision.
 - At most one AI call per member may be active.
 - Failed calls restore the last stable task state and may be retried idempotently.

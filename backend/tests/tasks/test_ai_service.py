@@ -276,6 +276,32 @@ async def test_first_draft_rejects_unknown_analysis_reference_before_call() -> N
 
 
 @pytest.mark.asyncio
+async def test_regeneration_from_suggestions_creates_a_child_revision() -> None:
+    parent = VersionAiSnapshot(id=uuid4(), content="旧稿包含必须保留")
+    lock = LockedFragmentSnapshot(id=uuid4(), text="必须保留", order_index=0)
+    selected = [SelectedSuggestion(suggestion=suggestion(0), note="语气温和")]
+    provider = FakeProvider([result("新稿仍然包含必须保留")])
+
+    output = await service(provider).regenerate_from_suggestions(
+        task(TaskState.EDITING, has_first_draft=True),
+        parent,
+        analysis(),
+        selected,
+        "保持克制",
+        [lock],
+        provider_config(),
+        "model-id",
+    )
+
+    assert output.kind == VersionKind.AI_REVISION
+    assert output.parent_version_id == parent.id
+    assert output.state.succeeded == TaskState.EDITING
+    assert output.provenance["scope"] == "suggestions"
+    assert output.provenance["selected_suggestion_ids"] == ["suggestion-0"]
+    assert output.validation_status == ValidationStatus.SATISFIED
+
+
+@pytest.mark.asyncio
 async def test_invalid_transition_fails_before_spending_provider_call() -> None:
     provider = FakeProvider([result("不会调用")])
     with pytest.raises(InvalidTaskTransition):

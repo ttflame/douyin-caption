@@ -20,6 +20,7 @@ from app.modules.ai.dto import (
     Selection,
     SelectionRevisionInput,
     Suggestion,
+    SuggestionRegenerationInput,
     SuggestionSet,
     SuggestionsInput,
     TextAnalysis,
@@ -50,7 +51,7 @@ from app.modules.tasks.domain import (
 )
 from app.modules.tasks.schemas import CreativeSettings
 
-PROMPT_TEMPLATE_VERSION = "ai-workflow-v4"
+PROMPT_TEMPLATE_VERSION = "ai-workflow-v5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +293,49 @@ class TaskAiService:
             locked_fragment_ids=[item.id for item in locked_fragments],
         )
 
+    async def regenerate_from_suggestions(
+        self,
+        task: TaskAiSnapshot,
+        parent: VersionAiSnapshot,
+        analysis: AnalysisResult,
+        selected_suggestions: list[SelectedSuggestion],
+        member_requirements: str,
+        locked_fragments: list[LockedFragmentSnapshot],
+        provider_config: ProviderConfig,
+        model_identifier: str,
+    ) -> VersionServiceResult:
+        plan = self._revision_plan(task)
+        _assert_selected_suggestions_reference_analysis(analysis, selected_suggestions)
+        ordered_locks = _to_ai_locks(locked_fragments)
+        request = self._workflow.suggestion_regeneration_request(
+            model_identifier,
+            SuggestionRegenerationInput(
+                source_text=task.source_text,
+                settings=_to_ai_settings(task.creative_settings),
+                analysis=analysis,
+                selected_suggestions=selected_suggestions,
+                member_requirements=member_requirements,
+                locked_fragments=ordered_locks,
+            ),
+        )
+        response = await self._complete(provider_config, request, plan)
+        _require_nonempty_text(response, plan)
+        return _revision_result(
+            plan,
+            parent,
+            member_requirements or "按当前优化方案重新生成",
+            response,
+            validate_locked_fragments(response.text, ordered_locks),
+            model_identifier,
+            scope="suggestions",
+            locked_fragment_ids=[item.id for item in locked_fragments],
+            extra_provenance={
+                "selected_suggestion_ids": [
+                    item.suggestion.suggestion_id for item in selected_suggestions
+                ],
+            },
+        )
+
     async def revise_selection(
         self,
         task: TaskAiSnapshot,
@@ -436,6 +480,7 @@ def _revision_result(
     scope: str,
     locked_fragment_ids: list[UUID],
     selection: Selection | None = None,
+    extra_provenance: dict[str, Any] | None = None,
 ) -> VersionServiceResult:
     if not validation.valid:
         raise AiOperationFailed(
@@ -452,6 +497,8 @@ def _revision_result(
     }
     if selection is not None:
         provenance["selection"] = selection.model_dump()
+    if extra_provenance:
+        provenance.update(extra_provenance)
     return VersionServiceResult(
         state=plan,
         parent_version_id=parent.id,

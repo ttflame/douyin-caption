@@ -417,6 +417,90 @@ async def test_continue_suggestions_preserves_selected_rows_and_notes(queue_cont
     assert "成员备注" in provider.calls[0]
 
 
+async def test_suggestion_regeneration_uses_saved_selection_and_creates_child(queue_context):
+    sessions, members, tasks, worker, provider = queue_context
+    async with sessions() as session:
+        task = await session.get(RewriteTask, tasks[0].id)
+        task.state = "editing"
+        analysis = AnalysisRecord(
+            task_id=task.id,
+            sequence=1,
+            payload={"content": "分析"},
+            is_selected=True,
+            prompt_template_version="test",
+            model_identifier="test",
+        )
+        session.add(analysis)
+        await session.flush()
+        rows = [
+            SuggestionRecord(
+                task_id=task.id,
+                analysis_id=analysis.id,
+                suggestion_key=f"s{i}",
+                analysis_issue_ids=["analysis"],
+                priority="primary" if i == 0 else "optional",
+                title=f"方案{i}",
+                problem="问题",
+                direction="方向",
+                reason="理由",
+                impact_scope="正文",
+                example="例子",
+                decision="accepted" if i == 0 else "pending",
+                member_note="语气温和" if i == 0 else None,
+            )
+            for i in range(5)
+        ]
+        version = ScriptVersion(
+            task_id=task.id,
+            kind="first_draft",
+            content="旧稿。必须保留。",
+            provenance={},
+            validation_status="not_checked",
+            validation_details={},
+            is_current_final=False,
+        )
+        session.add_all([*rows, version])
+        await session.flush()
+        lock = LockedFragment(
+            task_id=task.id,
+            source_version_id=version.id,
+            text="必须保留。",
+            start_offset=3,
+            end_offset=8,
+            order_index=0,
+        )
+        session.add(lock)
+        await session.commit()
+        operation = await AiQueueService(session).submit(
+            task,
+            members[0].id,
+            AiOperationKind.REVISION,
+            RevisionSubmit(
+                parent_version_id=version.id,
+                scope="suggestions",
+                analysis_id=analysis.id,
+                instruction="保持克制",
+            ),
+            str(uuid4()),
+        )
+        operation_id = operation.id
+        parent_id = version.id
+    provider.responses = ["新稿。必须保留。"]
+    provider.release.set()
+    await worker.tick()
+    await asyncio.gather(*worker.jobs.values())
+    async with sessions() as session:
+        operation = await session.get(AiOperation, operation_id)
+        child = await session.get(ScriptVersion, operation.resource_id)
+        assert operation.status == "succeeded"
+        assert child.parent_id == parent_id
+        assert child.kind == "ai_revision"
+        assert child.provenance["scope"] == "suggestions"
+        assert child.provenance["selected_suggestion_ids"] == ["s0"]
+    assert '"suggestion_id":"s0"' in provider.calls[0]
+    assert '"text":"必须保留。"' in provider.calls[0]
+
+
 @pytest.mark.parametrize(
     "candidate, expected",
     [

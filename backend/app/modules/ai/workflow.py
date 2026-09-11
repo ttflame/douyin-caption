@@ -7,6 +7,7 @@ from .dto import (
     FullRevisionInput,
     Message,
     SelectionRevisionInput,
+    SuggestionRegenerationInput,
     SuggestionSet,
     SuggestionsInput,
     TextAnalysis,
@@ -76,6 +77,31 @@ class AiWorkflow:
                         item.model_dump(mode="json") for item in data.selected_suggestions
                     ],
                     member_requirements=data.member_requirements,
+                ),
+            ],
+        )
+
+    def suggestion_regeneration_request(
+        self, model: str, data: SuggestionRegenerationInput
+    ) -> CompletionRequest:
+        rule = (
+            "根据原文、结构分析和当前已采纳建议重新生成一版完整成品。"
+            "locked_fragments 中每段文字必须逐字不变地保留，包括标点；可以根据文章结构调整其位置。"
+            "相同文字若被锁定多次，必须保留相应次数。只返回完整纯正文，不附解释或标题。"
+        )
+        return CompletionRequest(
+            model=model,
+            messages=[
+                self._prompts.system_message(data.settings, rule),
+                self._prompts.user_payload(
+                    "请按当前优化方案重新生成成品版本。",
+                    source_text=data.source_text,
+                    analysis=data.analysis.model_dump(mode="json"),
+                    selected_suggestions=[
+                        item.model_dump(mode="json") for item in data.selected_suggestions
+                    ],
+                    member_requirements=data.member_requirements,
+                    locked_fragments=[item.model_dump() for item in data.locked_fragments],
                 ),
             ],
         )

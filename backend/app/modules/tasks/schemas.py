@@ -195,7 +195,8 @@ class FirstDraftSubmit(BaseModel):
 
 class RevisionSubmit(BaseModel):
     parent_version_id: UUID
-    scope: str = Field(pattern="^(full|selection)$")
+    scope: str = Field(pattern="^(full|selection|suggestions)$")
+    analysis_id: UUID | None = None
     instruction: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000)
     ]
@@ -211,6 +212,8 @@ class RevisionSubmit(BaseModel):
                 raise ValueError("Selection end must be after its start")
         elif self.selection_start is not None or self.selection_end is not None:
             raise ValueError("Selection offsets are only valid for a selection revision")
+        if self.scope != "suggestions" and self.analysis_id is not None:
+            raise ValueError("Analysis ID is only valid for a suggestion regeneration")
         return self
 
 

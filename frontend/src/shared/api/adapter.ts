@@ -2,7 +2,46 @@ import { apiDownload, ApiError, apiRequest } from './client'
 import type { AiOperation, AnalysisModule, CreativePreset, CreativeSettings, Member, ProviderSettings, RewriteTask, Suggestion, TaskState, TextLock, Version } from '../types'
 
 type Json = Record<string, unknown>
-const idempotencyHeaders = () => ({ 'Idempotency-Key': crypto.randomUUID() })
+let uuidFallbackCounter = 0
+
+function formatUuid(bytes: Uint8Array) {
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+function generateIdempotencyKey() {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    try {
+      return cryptoApi.randomUUID()
+    } catch {
+      // Some browsers expose randomUUID but reject it outside secure contexts.
+    }
+  }
+
+  const bytes = new Uint8Array(16)
+  let hasRandomBytes = false
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    try {
+      cryptoApi.getRandomValues(bytes)
+      hasRandomBytes = true
+    } catch {
+      // Fall through to the non-crypto fallback.
+    }
+  }
+  if (!hasRandomBytes) {
+    const timestamp = Date.now()
+    const counter = uuidFallbackCounter++
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256)
+    for (let index = 0; index < 6; index += 1) bytes[index] ^= (timestamp >>> (index * 8)) & 0xff
+    for (let index = 0; index < 4; index += 1) bytes[12 + index] ^= (counter >>> (index * 8)) & 0xff
+  }
+  return formatUuid(bytes)
+}
+
+const idempotencyHeaders = () => ({ 'Idempotency-Key': generateIdempotencyKey() })
 
 export const defaultSettings: CreativeSettings = {
   targetLengthMode: 'fixed',
@@ -139,6 +178,7 @@ export const api = {
   async suggest(taskId: string, analysisId?: string) { return submitOperation(`/tasks/${taskId}/suggestions`, { analysis_id: analysisId || null, member_context: '' }) },
   async decideSuggestion(taskId: string, suggestionId: string, selected: boolean, note?: string) { await apiRequest(`/tasks/${taskId}/suggestions/${suggestionId}`, { method: 'PATCH', body: JSON.stringify({ decision: selected ? 'accepted' : 'rejected', member_note: note || null }) }) },
   async firstDraft(taskId: string, analysisId?: string, memberRequirements = '') { return submitOperation(`/tasks/${taskId}/first-draft`, { analysis_id: analysisId || null, member_requirements: memberRequirements }) },
+  async regenerateFromSuggestions(taskId: string, parentVersionId: string, analysisId?: string, memberRequirements = '') { return submitOperation(`/tasks/${taskId}/revisions`, { parent_version_id: parentVersionId, scope: 'suggestions', instruction: memberRequirements.trim() || '按当前优化方案重新生成', analysis_id: analysisId || null, selection_start: null, selection_end: null }) },
   async revise(taskId: string, payload: { parentVersionId: string; instruction: string; selection?: { start: number; end: number } }) { return submitOperation(`/tasks/${taskId}/revisions`, { parent_version_id: payload.parentVersionId, instruction: payload.instruction, scope: payload.selection ? 'selection' : 'full', selection_start: payload.selection?.start ?? null, selection_end: payload.selection?.end ?? null }) },
   async manualEdit(taskId: string, versionId: string, content: string) { return mapVersion(await apiRequest(`/tasks/${taskId}/versions/${versionId}/manual-edit`, { method: 'POST', body: JSON.stringify({ content, instruction: '成员手工编辑' }) })) },
   async compareVersions(taskId: string, leftVersionId: string, rightVersionId: string) { const value = object(await apiRequest(`/tasks/${taskId}/versions/compare`, { method: 'POST', body: JSON.stringify({ left_version_id: leftVersionId, right_version_id: rightVersionId }) })); return text(value.diff) },

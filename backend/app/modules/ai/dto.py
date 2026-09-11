@@ -182,6 +182,10 @@ class FirstDraftInput(FrozenDto):
     member_requirements: str = ""
 
 
+class SuggestionRegenerationInput(FirstDraftInput):
+    locked_fragments: list[LockedFragment] = Field(default_factory=list)
+
+
 class FullRevisionInput(FrozenDto):
     parent_text: NonBlank
     instruction: NonBlank

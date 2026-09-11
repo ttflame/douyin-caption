@@ -10,6 +10,7 @@ from app.modules.ai.dto import (
     Selection,
     SelectionRevisionInput,
     Suggestion,
+    SuggestionRegenerationInput,
     SuggestionsInput,
     TextAnalysis,
 )
@@ -100,6 +101,41 @@ def test_first_draft_contains_only_selected_suggestions(settings, analysis) -> N
     )
     assert request.response_schema is None
     assert '"suggestion_id":"s-1"' in request.messages[1].content
+
+
+def test_suggestion_regeneration_uses_latest_selection_and_locks(settings, analysis) -> None:
+    selected = SelectedSuggestion(
+        suggestion=Suggestion(
+            suggestion_id="s-1",
+            priority="primary",
+            title="压缩",
+            analysis_issue_ids=["issue-1"],
+            problem="重复",
+            direction="删减",
+            rationale="清楚",
+            impact_scope="开头",
+            example="直接开场",
+        ),
+        note="语气温和",
+    )
+    request = AiWorkflow().suggestion_regeneration_request(
+        "gpt-test",
+        SuggestionRegenerationInput(
+            source_text="原文",
+            settings=settings,
+            analysis=analysis,
+            selected_suggestions=[selected],
+            member_requirements="保持克制",
+            locked_fragments=[LockedFragment(fragment_id="l-1", text="必须保留")],
+        ),
+    )
+
+    content = request.messages[1].content
+    assert '"source_text":"原文"' in content
+    assert '"suggestion_id":"s-1"' in content
+    assert '"member_requirements":"保持克制"' in content
+    assert '"text":"必须保留"' in content
+    assert "重新生成一版完整成品" in request.messages[0].content
 
 
 def test_full_revision_includes_exact_locks(settings) -> None:

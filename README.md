@@ -89,6 +89,13 @@ Regression checks: `npm --prefix frontend test`, `npm --prefix frontend run buil
 `cd frontend; npx playwright test` (Chrome). Browser tests use simulated API responses and do not
 spend model credits or change saved documents.
 
+## Server deployment
+
+The checked-in systemd units and the deployment, backup, migration, verification and rollback
+runbook are documented in [`deploy/README.md`](deploy/README.md). The units intentionally mirror the
+current Ubuntu server and contain its fixed user and repository path; review those values before
+using them on another host. Production secrets and database files remain outside Git.
+
 ## Provider URL security
 
 Each member enters the provider's model name directly in Settings. Saving, connection tests, and AI

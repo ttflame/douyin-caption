@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 test('keeps selected suggestions and sentence locks through repeated generation', async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 723, height: 698 })
+  await page.setViewportSize({ width: 390, height: 844 })
   await page.addInitScript(() => {
     localStorage.setItem('dc_token', 'test-session')
     localStorage.setItem('dc_member', JSON.stringify({ id: 'owner', username: 'tester', displayName: '测试成员', role: 'member' }))
@@ -12,6 +12,7 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   const locks: { id: string; text: string; source_version_id: string; start_offset: number; end_offset: number }[] = []
   const operations: { id: string; task_id: string; task_name: string; kind: string; status: string; created_at: string; completed_at?: string; resource_type?: string; resource_id?: string }[] = []
   let revisionParent = ''
+  const revisionScopes: string[] = []
   function complete(resourceType: string, resourceId: string, state: string) {
     Object.assign(operations.at(-1)!, { status: 'succeeded', resource_type: resourceType, resource_id: resourceId, completed_at: new Date().toISOString() })
     task.state = state
@@ -27,6 +28,7 @@ test('keeps selected suggestions and sentence locks through repeated generation'
     if (path === '/tasks/alpha/locks') return send(locks)
     if (path === '/tasks/alpha/suggestions' && method === 'GET') return send(suggestions)
     if (path.startsWith('/tasks/alpha/suggestions/') && method === 'PATCH') {
+      await new Promise(resolve => setTimeout(resolve, 250))
       Object.assign(suggestions.find(item => item.id === path.split('/').at(-1))!, route.request().postDataJSON())
       return send({})
     }
@@ -50,7 +52,11 @@ test('keeps selected suggestions and sentence locks through repeated generation'
     }
     if (method === 'POST' && ['/tasks/alpha/suggestions', '/tasks/alpha/first-draft', '/tasks/alpha/revisions'].includes(path)) {
       const kind = path.endsWith('suggestions') ? 'suggestions' : path.endsWith('first-draft') ? 'first_draft' : 'revision'
-      if (kind === 'revision') revisionParent = route.request().postDataJSON().parent_version_id
+      if (kind === 'revision') {
+        const payload = route.request().postDataJSON()
+        revisionParent = payload.parent_version_id
+        revisionScopes.push(payload.scope)
+      }
       const operation = { id: `job${operations.length + 1}`, task_id: 'alpha', task_name: task.name, kind, status: 'queued', created_at: new Date().toISOString() }
       operations.push(operation)
       return send(operation, 202)
@@ -59,10 +65,15 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   })
   await page.goto('/workbench/alpha')
   await page.getByRole('checkbox').first().check()
-  await expect(page.getByText('已固定 1 项', { exact: true })).toBeVisible()
+  await page.getByRole('checkbox').nth(1).check()
+  await expect(page.getByText('已固定 2 项', { exact: true })).toBeVisible()
+  await expect.poll(() => suggestions.filter(item => item.decision === 'accepted').length).toBe(2)
+  await page.screenshot({ path: testInfo.outputPath('suggestions-mobile-multiselect.png'), fullPage: true })
+  await page.setViewportSize({ width: 723, height: 698 })
   await page.getByRole('button', { name: '继续优化方案', exact: true }).click()
   await expect.poll(() => operations.length).toBe(1)
   expect(suggestions[0]!.decision).toBe('accepted')
+  expect(suggestions[1]!.decision).toBe('accepted')
   suggestions.slice(1).forEach(item => { item.title = `新${item.title}` })
   complete('suggestions', 'analysis', 'suggestions_ready')
   await expect(page.getByText('新方案 2', { exact: true })).toBeVisible({ timeout: 10000 })
@@ -93,6 +104,18 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   await expect(page.getByRole('button', { name: '锁定句子：新的结构更自然。', exact: true })).toBeVisible({ timeout: 10000 })
   await page.getByRole('button', { name: '收起任务中心', exact: true }).click()
   await expect(page.locator('.locked-sentence')).toHaveCount(2)
+  await page.getByRole('button', { name: '优化方案' }).click()
+  await page.getByRole('checkbox').first().uncheck()
+  await expect.poll(() => suggestions[0]!.decision).toBe('rejected')
+  await page.getByRole('button', { name: '按当前方案生成新版本', exact: true }).click()
+  await expect.poll(() => operations.length).toBe(4)
+  expect(revisionParent).toBe('v3')
+  expect(revisionScopes.at(-1)).toBe('suggestions')
+  versions.push({ id: 'v4', kind: 'ai_revision', parent_id: 'v3', content: '按方案生成的新稿。补充一句。🙂开头说明问题。', created_at: new Date().toISOString() })
+  complete('version', 'v4', 'editing')
+  await expect(page.getByRole('button', { name: '锁定句子：按方案生成的新稿。', exact: true })).toBeVisible({ timeout: 10000 })
+  await page.getByRole('button', { name: '收起任务中心', exact: true }).click()
+  await expect(page.locator('.locked-sentence')).toHaveCount(2)
   await page.setViewportSize({ width: 1262, height: 698 })
   await page.screenshot({ path: testInfo.outputPath('locked-sentences-desktop.png') })
   await page.reload()
@@ -101,6 +124,9 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   await expect.poll(() => page.locator('.sidebar').evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
   await page.screenshot({ path: testInfo.outputPath('locked-sentences-mobile.png') })
+  await page.getByRole('button', { name: '优化方案' }).click()
+  await page.screenshot({ path: testInfo.outputPath('suggestion-regeneration-mobile.png'), fullPage: true })
+  await page.getByRole('button', { name: '成品修改' }).click()
   await page.getByRole('button', { name: '取消保留：补充一句。', exact: true }).click()
   await expect(page.locator('.locked-sentence')).toHaveCount(1)
 })

@@ -307,6 +307,9 @@ p { color: var(--text-soft); line-height: 1.7; }
   .stage-nav button svg { display: none; }
   .stage-heading { align-items: flex-start; }
   .heading-actions { flex-direction: column-reverse; align-items: stretch; }
+  .suggestions-heading { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .suggestions-heading .heading-actions { width: 100%; margin-left: 0; }
+  .suggestions-heading .ui-button { width: 100%; }
   .stage-heading p { max-width: 220px; }
   .analysis-list article { grid-template-columns: 1fr; gap: 9px; }
   .source-document { padding: 20px 17px; }

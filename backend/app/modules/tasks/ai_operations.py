@@ -378,6 +378,30 @@ class TaskAiOperationService:
         ]
         has_first_draft = await self._has_first_draft(task.id)
         parent_snapshot = VersionAiSnapshot(id=parent.id, content=parent.content)
+        analysis_record = None
+        analysis = None
+        selected: list[SelectedSuggestion] = []
+        if payload.scope == "suggestions":
+            analysis_record = await self._analysis(task.id, payload.analysis_id)
+            analysis = _stored_analysis(analysis_record)
+            suggestion_records = list(
+                (
+                    await self._session.scalars(
+                        select(SuggestionRecord).where(
+                            SuggestionRecord.task_id == task.id,
+                            SuggestionRecord.analysis_id == analysis_record.id,
+                        )
+                    )
+                ).all()
+            )
+            SuggestionSet(suggestions=[_stored_suggestion(item) for item in suggestion_records])
+            selected = [
+                SelectedSuggestion(
+                    suggestion=_stored_suggestion(item), note=item.member_note or ""
+                )
+                for item in suggestion_records
+                if item.decision == SuggestionDecision.ACCEPTED
+            ]
         request_hash = _request_hash(
             AiOperationKind.REVISION,
             task.id,
@@ -389,12 +413,26 @@ class TaskAiOperationService:
                     for item in locks
                 ],
                 "payload": payload.model_dump(mode="json"),
+                "analysis": analysis_record.payload if analysis_record else None,
+                "suggestions": [item.model_dump(mode="json") for item in selected],
             },
         )
 
         async def invoke(
             config: ProviderConfig, model: str, initial_state: TaskState
         ) -> VersionServiceResult:
+            if payload.scope == "suggestions":
+                assert analysis is not None
+                return await self._ai.regenerate_from_suggestions(
+                    _task_snapshot(task, has_first_draft=has_first_draft, state=initial_state),
+                    parent_snapshot,
+                    analysis,
+                    selected,
+                    payload.instruction,
+                    lock_snapshots,
+                    config,
+                    model,
+                )
             if payload.scope == "full":
                 return await self._ai.revise_full(
                     _task_snapshot(task, has_first_draft=has_first_draft, state=initial_state),
