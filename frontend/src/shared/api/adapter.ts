@@ -172,6 +172,7 @@ export const api = {
   async createMember(value: { username: string; displayName: string; password: string }) { return mapMember(await apiRequest('/admin/members', { method: 'POST', body: JSON.stringify({ username: value.username, display_name: value.displayName, password: value.password, role: 'member' }) })) },
   async updateMember(member: Member) { return mapMember(await apiRequest(`/admin/members/${member.id}`, { method: 'PATCH', body: JSON.stringify({ display_name: member.displayName, is_active: member.active }) })) },
   async listOperations() { return array(await apiRequest('/operations')).map(mapOperation) },
+  async clearOperationHistory() { await apiRequest('/operations/history', { method: 'DELETE' }) },
   async cancelOperation(id: string) { return mapOperation(await apiRequest(`/operations/${id}/cancel`, { method: 'POST' })) },
   async retryOperation(id: string) { return submitOperation(`/operations/${id}/retry`, {}) },
   async analyze(taskId: string) { return submitOperation(`/tasks/${taskId}/analysis`, {}) },

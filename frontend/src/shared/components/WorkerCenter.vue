@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { ArrowUpRight, Check, ChevronDown, CircleAlert, Clock3, ListTodo, LoaderCircle, RotateCcw, X } from 'lucide-vue-next'
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, Clock3, ListTodo, LoaderCircle, RotateCcw, Trash2, X } from 'lucide-vue-next'
 import { useSessionStore } from '../stores/session'
 import { operationLabels, useQueueStore } from '../stores/queue'
 import type { AiOperation } from '../types'
+import UiButton from './UiButton.vue'
 
 const session = useSessionStore()
 const queue = useQueueStore()
@@ -17,6 +18,8 @@ const rows = computed(() => [...queue.items].sort((a, b) => {
 }))
 const running = computed(() => queue.active.find((row) => row.status === 'running'))
 const queuedCount = computed(() => queue.active.filter((row) => row.status === 'queued').length)
+const historyCount = computed(() => queue.items.length - queue.active.length)
+const clearDialog = ref<HTMLDialogElement | null>(null)
 const statuses = { queued: '排队中', running: '执行中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
 function elapsed(item: AiOperation) {
   if (!item.startedAt) return ''
@@ -24,6 +27,7 @@ function elapsed(item: AiOperation) {
   const seconds = Math.max(0, Math.floor(((item.completedAt ? timestamp(item.completedAt) : now.value) - timestamp(item.startedAt)) / 1000))
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
+async function clearHistory() { clearDialog.value?.close(); await queue.clearHistory() }
 </script>
 
 <template>
@@ -33,7 +37,7 @@ function elapsed(item: AiOperation) {
       <button class="icon-button" aria-label="关闭任务通知" title="关闭通知" @click="queue.notice = null"><X :size="16" /></button>
     </div>
     <section v-if="queue.expanded" id="worker-panel" class="worker-panel" aria-label="任务队列">
-      <header><span>任务中心</span><span class="worker-count">{{ queue.active.length }} 项待完成</span><button class="icon-button" aria-label="收起任务中心" title="收起" @click="queue.expanded = false"><ChevronDown :size="18" /></button></header>
+      <header><span>任务中心</span><button class="icon-button clear-history" aria-label="清除任务历史" title="清除任务历史" :disabled="!historyCount || !!queue.actionId" @click="clearDialog?.showModal()"><Trash2 :size="16" /></button><span class="worker-count">{{ queue.active.length }} 项待完成</span><button class="icon-button" aria-label="收起任务中心" title="收起" @click="queue.expanded = false"><ChevronDown :size="18" /></button></header>
       <p v-if="queue.error" class="worker-error" role="alert">{{ queue.error }}</p>
       <div class="worker-list">
         <p v-if="!rows.length" class="worker-empty">暂无任务</p>
@@ -48,6 +52,7 @@ function elapsed(item: AiOperation) {
         </article>
       </div>
     </section>
+    <dialog ref="clearDialog" class="confirm-dialog" aria-labelledby="clear-history-title" @click.self="clearDialog?.close()"><section class="confirm-dialog-body"><header><h2 id="clear-history-title">清除任务历史？</h2><button class="icon-button" type="button" aria-label="关闭确认窗口" @click="clearDialog?.close()"><X :size="18" /></button></header><p>将清除已完成、失败和已取消的记录。排队中和执行中的任务会保留；失败任务清除后不能从这里重试。</p><footer><UiButton @click="clearDialog?.close()">取消</UiButton><UiButton variant="danger" :icon="Trash2" @click="clearHistory">确认清除</UiButton></footer></section></dialog>
     <button class="worker-toggle" :aria-expanded="queue.expanded" aria-controls="worker-panel" aria-label="任务中心" @click="queue.expanded = !queue.expanded; queue.notice = null">
       <component :is="running ? LoaderCircle : ListTodo" :size="19" :class="{ 'worker-spinner': running }" /><span>{{ running ? `${operationLabels[running.kind]} ${elapsed(running)}` : '任务中心' }}</span><span v-if="queuedCount" class="worker-badge">{{ queuedCount }} 排队</span><CircleAlert v-if="queue.error" :size="16" />
     </button>
@@ -61,6 +66,7 @@ function elapsed(item: AiOperation) {
 .worker-badge { font-size: 12px; color: #d7e8e0; }
 .worker-panel { width: 370px; max-width: 100%; border-radius: 8px; background: #fff; box-shadow: 0 8px 36px #253c3426; overflow: hidden; }
 .worker-panel header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #edf2f0; font-size: 14px; }
+.clear-history { width: 28px; height: 28px; color: #6a7871; }
 .worker-count { margin-left: auto; font-size: 12px; color: #66756e; }
 .worker-list { max-height: min(430px, 55dvh); overflow-y: auto; scrollbar-gutter: stable; }
 .worker-list::-webkit-scrollbar { width: 5px; }

@@ -8,7 +8,7 @@ import { api } from '../api/adapter'
 import { useQueueStore } from '../stores/queue'
 import type { AiOperation } from '../types'
 
-vi.mock('../api/adapter', () => ({ api: { listOperations: vi.fn(), cancelOperation: vi.fn(), retryOperation: vi.fn() } }))
+vi.mock('../api/adapter', () => ({ api: { listOperations: vi.fn(), cancelOperation: vi.fn(), retryOperation: vi.fn(), clearOperationHistory: vi.fn() } }))
 vi.mock('../stores/session', () => ({ useSessionStore: () => ({ member: { id: 'owner' } }) }))
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
@@ -33,9 +33,19 @@ it('retains the queue across routes, shows completion and cancels waiting work',
   await waitFor(() => expect(queue.active).toHaveLength(1))
   vi.mocked(api.listOperations).mockResolvedValue([{ ...row, status: 'succeeded' }, { ...waiting, status: 'cancelled' }])
   await queue.refresh()
+  expect(queue.updates.a?.status).toBe('succeeded')
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', '') }
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }
+  await fireEvent.click(screen.getByRole('button', { name: '清除任务历史' }))
+  expect(screen.getByRole('dialog').hasAttribute('open')).toBe(true)
+  await fireEvent.click(screen.getByRole('button', { name: '确认清除' }))
+  await waitFor(() => expect(api.clearOperationHistory).toHaveBeenCalledTimes(1))
+  expect(queue.items).toEqual([])
+  expect(queue.updates.a).toBeUndefined()
+  vi.mocked(api.listOperations).mockResolvedValue([{ ...row, status: 'succeeded' }])
+  await queue.refresh()
   await fireEvent.click(screen.getByRole('link', { name: '查看文案：原文 A' }))
   await waitFor(() => expect(router.currentRoute.value.path).toBe('/workbench/a'))
-  expect(queue.updates.a?.status).toBe('succeeded')
   view.unmount()
   expect(queue.items).toEqual([])
 })

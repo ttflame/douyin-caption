@@ -322,6 +322,22 @@ async def test_cancelled_queue_entry_is_never_sent_to_provider(queue_context):
     assert provider.calls == []
 
 
+async def test_clear_completed_history_preserves_active_and_other_members(queue_context):
+    sessions, members, tasks, _, _ = queue_context
+    cancelled = await enqueue(sessions, tasks[0])
+    active = await enqueue(sessions, tasks[1])
+    other = await enqueue(sessions, tasks[2])
+    async with sessions() as session:
+        service = AiQueueService(session)
+        await service.cancel(members[0].id, cancelled.id)
+        await service.cancel(members[1].id, other.id)
+        await service.clear_completed(members[0].id)
+    async with sessions() as session:
+        assert await session.get(AiOperation, cancelled.id) is None
+        assert (await session.get(AiOperation, active.id)).status == "queued"
+        assert (await session.get(AiOperation, other.id)).status == "cancelled"
+
+
 async def test_continue_suggestions_preserves_selected_rows_and_notes(queue_context):
     sessions, members, tasks, worker, provider = queue_context
     async with sessions() as session:

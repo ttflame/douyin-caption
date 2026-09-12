@@ -31,6 +31,7 @@ EXPECTED_METHODS = {
     ("POST", "/tasks/{task_id}/revisions"),
     ("GET", "/operations/{operation_id}"),
     ("GET", "/operations"),
+    ("DELETE", "/operations/history"),
     ("POST", "/operations/{operation_id}/cancel"),
     ("POST", "/operations/{operation_id}/retry"),
     ("GET", "/tasks/{task_id}/versions"),

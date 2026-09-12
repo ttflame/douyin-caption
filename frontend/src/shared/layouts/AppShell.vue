@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { Archive, FilePenLine, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings, SquarePen, Users, X } from 'lucide-vue-next'
+import { Archive, BookMarked, FilePenLine, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings, SquarePen, Users, X } from 'lucide-vue-next'
 import { useSessionStore } from '../stores/session'
 import UiButton from '../components/UiButton.vue'
 import WorkerCenter from '../components/WorkerCenter.vue'
@@ -17,6 +17,7 @@ const isAdmin = computed(() => session.member?.role === 'admin')
 const links = [
   { to: '/tasks', label: '文案任务', icon: FilePenLine },
   { to: '/tasks?view=archived', label: '已归档', icon: Archive },
+  { to: '/presets', label: '预设方案', icon: BookMarked },
   { to: '/settings', label: '系统设置', icon: Settings },
 ]
 function active(to: string) {

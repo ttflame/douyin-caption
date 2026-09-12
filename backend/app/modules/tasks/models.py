@@ -67,7 +67,9 @@ class RewriteTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class CreativePreset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "creative_presets"
-    __table_args__ = (Index("ix_creative_presets_owner_name", "owner_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", name="uq_creative_presets_owner_name"),
+    )
 
     owner_id: Mapped[UUID] = mapped_column(
         ForeignKey("members.id", ondelete="CASCADE"), nullable=False, index=True

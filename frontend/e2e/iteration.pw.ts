@@ -75,7 +75,7 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   await expect.poll(() => suggestions.filter(item => item.decision === 'accepted').length).toBe(2)
   await page.screenshot({ path: testInfo.outputPath('suggestions-mobile-multiselect.png'), fullPage: true })
   await page.setViewportSize({ width: 723, height: 698 })
-  await page.getByRole('button', { name: '继续优化方案', exact: true }).click()
+  await page.getByRole('button', { name: '保留已选，继续优化', exact: true }).click()
   await expect.poll(() => operations.length).toBe(1)
   expect(suggestions[0]!.decision).toBe('accepted')
   expect(suggestions[1]!.decision).toBe('accepted')

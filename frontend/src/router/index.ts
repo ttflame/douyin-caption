@@ -7,6 +7,7 @@ import NewTaskPage from '../features/tasks/NewTaskPage.vue'
 import SettingsPage from '../features/settings/SettingsPage.vue'
 import MemberAdminPage from '../features/admin/MemberAdminPage.vue'
 import WorkbenchPage from '../features/workbench/WorkbenchPage.vue'
+import PresetManagementPage from '../features/presets/PresetManagementPage.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -17,6 +18,7 @@ export const router = createRouter({
       { path: 'tasks', component: TaskListPage },
       { path: 'tasks/new', component: NewTaskPage },
       { path: 'tasks/:id/edit', component: NewTaskPage },
+      { path: 'presets', component: PresetManagementPage },
       { path: 'workbench/:id', component: WorkbenchPage },
       { path: 'settings', component: SettingsPage },
       { path: 'admin/members', component: MemberAdminPage, meta: { admin: true } },

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -152,6 +152,15 @@ class AiQueueService:
             ).all()
         )
         return active + recent
+
+    async def clear_completed(self, owner_id: UUID) -> None:
+        await self.session.execute(
+            delete(AiOperation).where(
+                AiOperation.owner_id == owner_id,
+                AiOperation.status.not_in(ACTIVE_STATUSES),
+            )
+        )
+        await self.session.commit()
 
     async def cancel(self, owner_id: UUID, operation_id: UUID) -> AiOperation:
         operation = await self.owned(owner_id, operation_id)

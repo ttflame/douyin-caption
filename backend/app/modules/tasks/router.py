@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from redis.asyncio import Redis
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -233,8 +234,12 @@ async def create_preset(
     member: Annotated[Member, Depends(get_current_member)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
-    preset = await PresetRepository(session).create(member.id, payload)
-    await _commit_and_refresh(session, preset)
+    try:
+        preset = await PresetRepository(session).create(member.id, payload)
+        await _commit_and_refresh(session, preset)
+    except IntegrityError as exc:
+        await session.rollback()
+        raise TaskApiError("preset_name_exists", "已有同名预设", 409) from exc
     return preset
 
 
@@ -250,8 +255,14 @@ async def update_preset(
         preset = await repository.get_owned(preset_id, member.id)
     except PresetNotFoundError as exc:
         raise _preset_not_found() from exc
-    preset = await repository.replace_settings(preset, name=payload.name, settings=payload.settings)
-    await _commit_and_refresh(session, preset)
+    try:
+        preset = await repository.replace_settings(
+            preset, name=payload.name, settings=payload.settings
+        )
+        await _commit_and_refresh(session, preset)
+    except IntegrityError as exc:
+        await session.rollback()
+        raise TaskApiError("preset_name_exists", "已有同名预设", 409) from exc
     return preset
 
 
@@ -614,6 +625,15 @@ async def list_ai_operations(
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
     return await AiQueueService(session).list_owned(member.id)
+
+
+@router.delete("/operations/history", status_code=204, tags=["ai-workflow"])
+async def clear_ai_operation_history(
+    member: Annotated[Member, Depends(get_current_member)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    await AiQueueService(session).clear_completed(member.id)
+    return Response(status_code=204)
 
 
 @router.post(

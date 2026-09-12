@@ -84,5 +84,23 @@ export const useQueueStore = defineStore('queue', () => {
     } finally { if (run === generation) actionId.value = '' }
   }
 
-  return { items, expanded, error, notice, updates, active, actionId, start, stop, refresh, submit, control }
+  async function clearHistory() {
+    if (actionId.value) return
+    actionId.value = 'history'
+    const run = generation
+    try {
+      await api.clearOperationHistory()
+      if (run === generation) {
+        const completedTaskIds = new Set(items.value.filter((item) => !isActiveOperation(item)).map((item) => item.taskId))
+        items.value = items.value.filter(isActiveOperation)
+        for (const taskId of completedTaskIds) delete updates.value[taskId]
+        if (notice.value && !isActiveOperation(notice.value)) notice.value = null
+        error.value = ''
+      }
+    } catch (reason) {
+      if (run === generation) error.value = reason instanceof Error ? reason.message : '历史清除失败，请重试'
+    } finally { if (run === generation) actionId.value = '' }
+  }
+
+  return { items, expanded, error, notice, updates, active, actionId, start, stop, refresh, submit, control, clearHistory }
 })
