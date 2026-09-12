@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ArrowRight, FileText, SquarePen } from 'lucide-vue-next'
 import UiButton from '../../shared/components/UiButton.vue'
 import UiField from '../../shared/components/UiField.vue'
 import { useSessionStore } from '../../shared/stores/session'
+import { consumeReturnTo } from './returnTo'
 
 const username = ref(import.meta.env.VITE_DEFAULT_LOGIN_USERNAME ?? '')
 const password = ref(import.meta.env.VITE_DEFAULT_LOGIN_PASSWORD ?? '')
 const session = useSessionStore()
 const router = useRouter()
-async function submit() { try { await session.login(username.value, password.value); await router.replace('/tasks') } catch { /* Store renders the safe error. */ } }
+const route = useRoute()
+async function submit() { try { await session.login(username.value, password.value); await router.replace(consumeReturnTo()) } catch { /* Store renders the safe error. */ } }
 </script>
 
 <template>
@@ -22,7 +24,7 @@ async function submit() { try { await session.login(username.value, password.val
     </section>
     <section class="login-form-wrap">
       <form class="login-form" @submit.prevent="submit">
-        <div><h2>登录工作台</h2><p>使用管理员为你创建的成员账号。</p></div>
+        <div><h2>登录工作台</h2><p>{{ route.query.expired === '1' ? '登录已过期，请重新登录后继续' : '使用管理员为你创建的成员账号。' }}</p></div>
         <div v-if="session.error" class="inline-alert error" role="alert">{{ session.error }}</div>
         <UiField v-model="username" label="账号" autocomplete="username" />
         <UiField v-model="password" label="密码" type="password" />

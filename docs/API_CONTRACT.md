@@ -57,19 +57,25 @@ request; connect, write, and pool waits retain shorter limits of 10, 30, and 10 
 Successful operation submission returns HTTP `202` with a persisted `AiOperation` in `queued`
 status. Responses include `task_id`, `task_name`, `kind`, `created_at`, nullable `started_at` and
 `completed_at`, and optional `resource_type` / `resource_id`. Mutating submissions accept an
-`Idempotency-Key` header. A backend worker executes each member's queue in submission order,
+`Idempotency-Key` header. Clients send an `X-Request-ID`; the API returns the effective value in
+the response header and persists it on queued operations. `X-Request-Attempt` identifies transport
+retries. A backend worker executes each member's queue in submission order,
 independently of the submitting request and browser connection. Different members may run concurrently.
 
 - `POST /tasks/{task_id}/analysis`: analyze or re-analyze source text; accepts an empty object.
 - `PATCH /tasks/{task_id}/analysis/{analysis_id}`: save member corrections.
 - `GET /tasks/{task_id}/analysis/{analysis_id}`: read one owned analysis.
 - `GET /tasks/{task_id}/analyses`: list owned analysis history and selected state.
-- `POST /tasks/{task_id}/suggestions`: create 5-8 suggestions from a selected analysis.
+- `POST /tasks/{task_id}/suggestions`: create 5-8 suggestions from a selected analysis and a complete
+  `suggestion_decisions` snapshot; an empty list is valid for initial creation.
 - `PATCH /tasks/{task_id}/suggestions/{suggestion_id}`: accept, reject or annotate one suggestion.
 - `GET /tasks/{task_id}/suggestions`: read suggestions for the selected analysis, or filter with
   `analysis_id`.
-- `POST /tasks/{task_id}/first-draft`: generate the task's only first draft.
-- `POST /tasks/{task_id}/revisions`: create a full-text, selected-range, or current-suggestion revision from a parent version.
+- `POST /tasks/{task_id}/first-draft`: generate the task's only first draft from a required analysis
+  and complete suggestion decision snapshot.
+- `POST /tasks/{task_id}/revisions`: create a full-text, selected-range, or current-suggestion
+  revision from a parent version. `scope=suggestions` requires the analysis and complete snapshot.
+- `POST /client-events`: accept one authenticated, size-limited sanitized browser diagnostic event.
 - `GET /operations/{operation_id}`: poll operation state and safe error information.
 - `GET /operations`: all queued/running operations and the latest 30 finished operations owned by the current member.
 - `POST /operations/{operation_id}/cancel`: cancel a queued operation; returns `409` if execution has started or finished.
@@ -81,6 +87,13 @@ stable until execution finishes. A retry uses the saved request parameters with 
 current valid state. Historical non-analysis operations without saved inputs must be resubmitted
 from the workbench. The member's current provider settings are loaded when execution begins.
 
+Every submitted snapshot contains every suggestion ID visible for the specified analysis, including
+selected and unselected rows. IDs must be unique, notes are trimmed to `null` when blank and limited
+to 2,000 characters, and snapshots are limited to 100 rows. Missing, additional or foreign IDs
+return `409 suggestion_snapshot_stale`. Snapshot persistence, task-state transition and queue
+creation commit in one transaction. The worker uses the immutable snapshot stored in
+`AiOperation.request_payload`; later database changes cannot alter that operation's model input.
+
 Analysis sends only the system instruction `根据原文整理出来一个文案结构，逐条分析` and a user
 message containing the original text, without creative settings or a response schema. New analysis
 payloads have the shape `{ "content": "model response text" }`. Historical seven-module payloads
@@ -91,6 +104,10 @@ An idempotency key is scoped to member, task and operation kind and is bound to 
 body hash. Reusing it with different request parameters returns `409`. At most one provider call may
 run per member. If Redis coordination is unavailable, the worker leaves operations queued and does
 not call the provider. A failed operation does not prevent the next queued document from running.
+
+The browser applies a 15-second deadline to each idempotent submission attempt and retries network
+errors, timeouts, `408`, `429` and `5xx` at most twice. All attempts reuse the same request body,
+idempotency key and request ID. Business `4xx` responses are not retried.
 
 ## Versions and locked fragments
 

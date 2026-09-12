@@ -89,6 +89,11 @@ async function clearHistory() { clearDialog.value?.close(); await queue.clearHis
 .worker-notice a { color: #28574b; overflow-wrap: anywhere; }
 .worker-spinner { animation: worker-spin 1.6s linear infinite; }
 @keyframes worker-spin { to { transform: rotate(360deg); } }
-@media (max-width: 600px) { .worker-center { right: 16px; bottom: max(12px, env(safe-area-inset-bottom)); } .worker-panel { width: 358px; } }
+@media (max-width: 600px) {
+  .worker-center { right: 16px; bottom: max(12px, env(safe-area-inset-bottom)); }
+  .worker-panel { width: min(358px, calc(100vw - 32px)); }
+  .worker-toggle { width: 46px; padding: 0; justify-content: center; }
+  .worker-toggle > span { display: none; }
+}
 @media (prefers-reduced-motion: reduce) { .worker-spinner { animation: none; } }
 </style>

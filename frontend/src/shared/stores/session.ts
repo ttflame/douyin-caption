@@ -17,6 +17,6 @@ export const useSessionStore = defineStore('session', () => {
     finally { loading.value = false }
   }
   function logout() { token.value = ''; member.value = null; localStorage.removeItem('dc_token'); localStorage.removeItem('dc_member') }
-  window.addEventListener('dc:unauthorized', logout)
-  return { token, member, loading, error, authenticated, login, logout }
+  function expire() { logout(); error.value = '登录已过期，请重新登录后继续' }
+  return { token, member, loading, error, authenticated, login, logout, expire }
 })

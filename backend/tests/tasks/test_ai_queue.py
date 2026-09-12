@@ -38,6 +38,7 @@ from app.modules.tasks.schemas import (
     CreativeSettings,
     FirstDraftSubmit,
     RevisionSubmit,
+    SuggestionDecisionSubmit,
     SuggestionsSubmit,
 )
 
@@ -274,10 +275,34 @@ async def test_all_workflow_stages_use_saved_queue_inputs(queue_context):
     for kind in ("analysis", "suggestions", "first_draft", "revision"):
         async with sessions() as session:
             task = await session.get(RewriteTask, tasks[0].id)
+            analysis = await session.scalar(
+                select(AnalysisRecord).where(AnalysisRecord.task_id == task.id)
+            )
+            suggestion_rows = list(
+                (
+                    await session.scalars(
+                        select(SuggestionRecord).where(SuggestionRecord.task_id == task.id)
+                    )
+                ).all()
+            )
+            decisions = [
+                SuggestionDecisionSubmit(
+                    suggestion_id=row.id,
+                    selected=True,
+                    member_note="saved note" if index == 0 else None,
+                )
+                for index, row in enumerate(suggestion_rows)
+            ]
             payload = {
                 "analysis": AnalysisSubmit(),
-                "suggestions": SuggestionsSubmit(member_context="saved context"),
-                "first_draft": FirstDraftSubmit(member_requirements="saved requirements"),
+                "suggestions": SuggestionsSubmit(
+                    analysis_id=analysis.id, suggestion_decisions=decisions,
+                    member_context="saved context"
+                ) if analysis else None,
+                "first_draft": FirstDraftSubmit(
+                    analysis_id=analysis.id, suggestion_decisions=decisions,
+                    member_requirements="saved requirements"
+                ) if analysis else None,
             }.get(kind)
             if kind == "revision":
                 payload = RevisionSubmit(
@@ -401,8 +426,18 @@ async def test_continue_suggestions_preserves_selected_rows_and_notes(queue_cont
             operation = await AiQueueService(session).submit(
                 task,
                 members[0].id,
-                AiOperationKind.SUGGESTIONS,
-                SuggestionsSubmit(analysis_id=analysis_id),
+                    AiOperationKind.SUGGESTIONS,
+                    SuggestionsSubmit(
+                        analysis_id=analysis_id,
+                        suggestion_decisions=[
+                            SuggestionDecisionSubmit(
+                                suggestion_id=row.id,
+                                selected=row.id == fixed_id,
+                                member_note="成员备注" if row.id == fixed_id else None,
+                            )
+                            for row in rows
+                        ],
+                    ),
                 str(uuid4()),
             )
             operation_id = operation.id
@@ -491,12 +526,20 @@ async def test_suggestion_regeneration_uses_saved_selection_and_creates_child(qu
             task,
             members[0].id,
             AiOperationKind.REVISION,
-            RevisionSubmit(
-                parent_version_id=version.id,
-                scope="suggestions",
-                analysis_id=analysis.id,
-                instruction="保持克制",
-            ),
+                RevisionSubmit(
+                    parent_version_id=version.id,
+                    scope="suggestions",
+                    analysis_id=analysis.id,
+                    suggestion_decisions=[
+                        SuggestionDecisionSubmit(
+                            suggestion_id=row.id,
+                            selected=row.id == rows[0].id,
+                            member_note="语气温和" if row.id == rows[0].id else None,
+                        )
+                        for row in rows
+                    ],
+                    instruction="保持克制",
+                ),
             str(uuid4()),
         )
         operation_id = operation.id
@@ -515,6 +558,147 @@ async def test_suggestion_regeneration_uses_saved_selection_and_creates_child(qu
         assert child.provenance["selected_suggestion_ids"] == ["s0"]
     assert '"suggestion_id":"s0"' in provider.calls[0]
     assert '"text":"必须保留。"' in provider.calls[0]
+
+
+async def test_stale_suggestion_snapshot_rolls_back_without_queueing(queue_context):
+    sessions, members, tasks, _, _ = queue_context
+    async with sessions() as session:
+        task = await session.get(RewriteTask, tasks[0].id)
+        task.state = "suggestions_ready"
+        analysis = AnalysisRecord(
+            task_id=task.id,
+            sequence=1,
+            payload={"content": "分析"},
+            is_selected=True,
+            prompt_template_version="test",
+            model_identifier="test",
+        )
+        session.add(analysis)
+        await session.flush()
+        rows = [
+            SuggestionRecord(
+                task_id=task.id,
+                analysis_id=analysis.id,
+                suggestion_key=f"s{i}",
+                analysis_issue_ids=["analysis"],
+                priority="primary",
+                title=f"方案{i}",
+                problem="问题",
+                direction="方向",
+                reason="理由",
+                impact_scope="正文",
+                decision="pending",
+            )
+            for i in range(2)
+        ]
+        session.add_all(rows)
+        await session.commit()
+        task_id = task.id
+        first_row_id = rows[0].id
+        with pytest.raises(TaskAiExecutionError) as caught:
+            await AiQueueService(session).submit(
+                task,
+                members[0].id,
+                AiOperationKind.FIRST_DRAFT,
+                FirstDraftSubmit(
+                    analysis_id=analysis.id,
+                    suggestion_decisions=[
+                        SuggestionDecisionSubmit(
+                            suggestion_id=first_row_id, selected=True, member_note="不应保存"
+                        )
+                    ],
+                ),
+                "stale",
+            )
+        assert caught.value.code == "suggestion_snapshot_stale"
+        await session.rollback()
+        operation = await session.scalar(
+            select(AiOperation).where(AiOperation.task_id == task_id)
+        )
+        assert operation is None
+        saved = await session.get(SuggestionRecord, first_row_id)
+        assert saved.decision == "pending" and saved.member_note is None
+        fresh_task = await session.get(RewriteTask, task_id)
+        with pytest.raises(TaskAiExecutionError) as wrong_analysis:
+            await AiQueueService(session).submit(
+                fresh_task,
+                members[0].id,
+                AiOperationKind.SUGGESTIONS,
+                SuggestionsSubmit(analysis_id=uuid4(), suggestion_decisions=[]),
+                "wrong-analysis",
+            )
+        assert wrong_analysis.value.code == "suggestion_snapshot_stale"
+
+
+async def test_worker_uses_immutable_selection_from_operation_payload(queue_context):
+    sessions, members, tasks, worker, provider = queue_context
+    async with sessions() as session:
+        task = await session.get(RewriteTask, tasks[0].id)
+        task.state = "suggestions_ready"
+        analysis = AnalysisRecord(
+            task_id=task.id,
+            sequence=1,
+            payload={"content": "分析"},
+            is_selected=True,
+            prompt_template_version="test",
+            model_identifier="test",
+        )
+        session.add(analysis)
+        await session.flush()
+        rows = [
+            SuggestionRecord(
+                task_id=task.id,
+                analysis_id=analysis.id,
+                suggestion_key=f"s{i}",
+                analysis_issue_ids=["analysis"],
+                priority="primary",
+                title=f"方案{i}",
+                problem="问题",
+                direction="方向",
+                reason="理由",
+                impact_scope="正文",
+                decision="pending",
+            )
+            for i in range(5)
+        ]
+        session.add_all(rows)
+        await session.flush()
+        operation = await AiQueueService(session).submit(
+            task,
+            members[0].id,
+            AiOperationKind.FIRST_DRAFT,
+            FirstDraftSubmit(
+                analysis_id=analysis.id,
+                suggestion_decisions=[
+                    SuggestionDecisionSubmit(
+                        suggestion_id=row.id,
+                        selected=index == 0,
+                        member_note="快照备注" if index == 0 else None,
+                    )
+                    for index, row in enumerate(rows)
+                ],
+            ),
+            "immutable",
+            "request-immutable",
+        )
+        operation_id = operation.id
+        row_ids = [row.id for row in rows]
+    async with sessions() as session:
+        for row_id in row_ids:
+            changed = await session.get(SuggestionRecord, row_id)
+            changed.decision = "rejected"
+            changed.member_note = "数据库后续变化"
+        await session.commit()
+    provider.responses = ["第一版"]
+    provider.release.set()
+    await worker.tick()
+    await asyncio.gather(*worker.jobs.values())
+    assert "快照备注" in provider.calls[0]
+    assert "数据库后续变化" not in provider.calls[0]
+    async with sessions() as session:
+        saved_operation = await session.get(AiOperation, operation_id)
+        assert saved_operation.request_id == "request-immutable"
+        assert saved_operation.request_payload["suggestion_decisions"][0]["selected"] is True
 
 
 @pytest.mark.parametrize(

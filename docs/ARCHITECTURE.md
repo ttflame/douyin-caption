@@ -1,7 +1,7 @@
 # Architecture Baseline
 
-Version: 0.1  
-Date: 2026-09-05
+Version: 0.2
+Date: 2026-09-13
 
 ## System shape
 
@@ -35,6 +35,11 @@ Modules may depend on `app/core`. The AI module may consume task-domain DTOs but
 - `src/features/tasks`: task list, creation, creative settings and presets.
 - `src/features/workbench`: analysis, optimization selection, editing, locking, revisions and finalization.
 
+Suggestion selection is a local draft, isolated in `sessionStorage` by member, task and analysis.
+Checkbox and note edits do not write to the API. The three suggestion-based actions submit one
+immutable full snapshot. A successful `202` clears the draft; failures and authentication expiry
+preserve it. Login expiry stores a validated internal return route and never silently resubmits.
+
 ## Task state machine
 
 ```text
@@ -61,6 +66,9 @@ Rules:
   returned. `AiQueueWorker` runs for the API process lifespan, reads FIFO queue entries by member,
   and uses independent database sessions for execution. Page navigation or browser closure has no
   effect on accepted work. Queued entries are rediscovered after a process restart.
+- For suggestion-based operations, snapshot validation, decision persistence, task-state transition
+  and queue creation share one transaction. `request_payload` is the worker's source of truth. The
+  single-item suggestion `PATCH` remains only as a compatibility API.
 - A Redis member lease and conditional queued-to-running update prevent competing API workers from
   executing the same entry. A partial unique index prevents multiple active operations per document.
   Document mutation guards include queued operations, keeping their input resources stable.
@@ -85,6 +93,9 @@ Rules:
 - Provider URLs are revalidated before outbound use and must resolve only to public addresses;
   production additionally requires HTTPS and network-level egress controls.
 - Login attempts are rate-limited in Redis by IP, username and their combination.
+- Request IDs are validated or generated at the API boundary, returned to the browser, saved on AI
+  operations and included in submission and worker logs. Sanitized client events use a strict,
+  authenticated, size-limited and rate-limited endpoint.
 
 ## Shared-file ownership
 

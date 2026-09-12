@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import async_session_factory
+from app.core.request_trace import request_trace_middleware
 from app.modules.identity.errors import IdentityError, identity_exception_handler
 from app.modules.tasks.ai_worker import AiQueueWorker
 from app.modules.tasks.router import TaskApiError, get_member_ai_call_lock, task_exception_handler
@@ -31,12 +32,14 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Douyin Caption API", version="0.1.0", lifespan=lifespan)
+    app.middleware("http")(request_trace_middleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
     )
     app.include_router(api_router, prefix="/api/v1")
     app.add_exception_handler(IdentityError, identity_exception_handler)  # type: ignore[arg-type]

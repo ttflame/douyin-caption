@@ -189,7 +189,8 @@ class TaskAiOperationService:
                 )
             ).all()
         )
-        fixed = [item for item in previous if item.decision == SuggestionDecision.ACCEPTED]
+        decision_map = {item.suggestion_id: item for item in payload.suggestion_decisions}
+        fixed = [item for item in previous if decision_map[item.id].selected]
         if previous and len(fixed) == len(previous):
             raise TaskAiExecutionError(
                 "all_suggestions_fixed", "所有方案均已固定，请先取消勾选需要优化的方案", 409
@@ -233,13 +234,15 @@ class TaskAiOperationService:
             replacements = replacements[:capacity]
             # Validate the combined result before replacing any saved, unselected rows.
             SuggestionSet(suggestions=[_stored_suggestion(item) for item in fixed] + replacements)
-            await self._session.execute(
-                delete(SuggestionRecord).where(
-                    SuggestionRecord.task_id == task.id,
-                    SuggestionRecord.analysis_id == analysis_record.id,
-                    SuggestionRecord.decision != SuggestionDecision.ACCEPTED,
-                )
+            delete_unselected = delete(SuggestionRecord).where(
+                SuggestionRecord.task_id == task.id,
+                SuggestionRecord.analysis_id == analysis_record.id,
             )
+            if fixed:
+                delete_unselected = delete_unselected.where(
+                    SuggestionRecord.id.not_in([item.id for item in fixed])
+                )
+            await self._session.execute(delete_unselected)
             records = [
                 SuggestionRecord(
                     task_id=task.id,
@@ -293,11 +296,7 @@ class TaskAiOperationService:
         suggestion_set = SuggestionSet(
             suggestions=[_stored_suggestion(item) for item in suggestion_records]
         )
-        selected = [
-            SelectedSuggestion(suggestion=_stored_suggestion(item), note=item.member_note or "")
-            for item in suggestion_records
-            if item.decision == SuggestionDecision.ACCEPTED
-        ]
+        selected = _selected_suggestions(suggestion_records, payload.suggestion_decisions)
         has_first_draft = await self._has_first_draft(task.id)
         request_hash = _request_hash(
             AiOperationKind.FIRST_DRAFT,
@@ -395,13 +394,8 @@ class TaskAiOperationService:
                 ).all()
             )
             SuggestionSet(suggestions=[_stored_suggestion(item) for item in suggestion_records])
-            selected = [
-                SelectedSuggestion(
-                    suggestion=_stored_suggestion(item), note=item.member_note or ""
-                )
-                for item in suggestion_records
-                if item.decision == SuggestionDecision.ACCEPTED
-            ]
+            assert payload.suggestion_decisions is not None
+            selected = _selected_suggestions(suggestion_records, payload.suggestion_decisions)
         request_hash = _request_hash(
             AiOperationKind.REVISION,
             task.id,
@@ -534,15 +528,24 @@ class TaskAiOperationService:
                     return operation
             await self._session.refresh(task, with_for_update=True)
             config, model_identifier = await self._provider_context(owner_id)
-            initial_state = TaskState(task.state)
-            try:
-                assert_transition(initial_state, _running_state(kind))
-            except ValueError as exc:
-                raise TaskAiExecutionError(
-                    "invalid_task_state",
-                    "The task is not ready for this AI operation",
-                    409,
-                ) from exc
+            if operation is None:
+                initial_state = TaskState(task.state)
+                try:
+                    assert_transition(initial_state, _running_state(kind))
+                except ValueError as exc:
+                    raise TaskAiExecutionError(
+                        "invalid_task_state",
+                        "The task is not ready for this AI operation",
+                        409,
+                    ) from exc
+            else:
+                initial_state = TaskState(operation.initial_task_state)
+                if task.state != operation.running_task_state:
+                    raise TaskAiExecutionError(
+                        "invalid_task_state",
+                        "The queued task state no longer matches this operation",
+                        409,
+                    )
             if operation is None:
                 operation = AiOperation(
                     owner_id=owner_id,
@@ -798,6 +801,18 @@ def _stored_suggestion(record: SuggestionRecord) -> Suggestion:
         impact_scope=record.impact_scope,
         example=record.example or "无",
     )
+
+
+def _selected_suggestions(records, decisions) -> list[SelectedSuggestion]:
+    by_id = {item.suggestion_id: item for item in decisions}
+    return [
+        SelectedSuggestion(
+            suggestion=_stored_suggestion(record),
+            note=by_id[record.id].member_note or "",
+        )
+        for record in records
+        if by_id[record.id].selected
+    ]
 
 
 def _version_record(task_id: UUID, result: VersionServiceResult) -> ScriptVersion:

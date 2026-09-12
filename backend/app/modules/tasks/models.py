@@ -209,6 +209,7 @@ class AiOperation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     request_payload: Mapped[dict[str, Any]] = mapped_column(
         JSON, default=dict, server_default="{}", nullable=False
     )
+    request_id: Mapped[str | None] = mapped_column(String(80), index=True)
     task_name: Mapped[str] = mapped_column(
         String(200), default="", server_default="", nullable=False
     )

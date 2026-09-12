@@ -1,5 +1,5 @@
 import { apiDownload, ApiError, apiRequest } from './client'
-import type { AiOperation, AnalysisModule, CreativePreset, CreativeSettings, Member, ProviderSettings, RewriteTask, Suggestion, TaskState, TextLock, Version } from '../types'
+import type { AiOperation, AnalysisModule, CreativePreset, CreativeSettings, Member, ProviderSettings, RewriteTask, Suggestion, SuggestionDecisionInput, TaskState, TextLock, Version } from '../types'
 
 type Json = Record<string, unknown>
 let uuidFallbackCounter = 0
@@ -144,8 +144,10 @@ function mapOperation(raw: unknown): AiOperation {
 }
 
 async function submitOperation(path: string, body: unknown) {
-  return mapOperation(await apiRequest(path, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify(body) }))
+  return mapOperation(await apiRequest(path, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify(body), retryPolicy: 'idempotent-submit', stage: path.includes('first-draft') ? 'first_draft_submit' : path.includes('revisions') ? 'suggestion_regeneration_submit' : 'suggestions_submit' }))
 }
+
+const decisionPayload = (items: SuggestionDecisionInput[]) => items.map(item => ({ suggestion_id: item.suggestionId, selected: item.selected, member_note: item.memberNote }))
 
 export const api = {
   defaultSettings,
@@ -176,10 +178,10 @@ export const api = {
   async cancelOperation(id: string) { return mapOperation(await apiRequest(`/operations/${id}/cancel`, { method: 'POST' })) },
   async retryOperation(id: string) { return submitOperation(`/operations/${id}/retry`, {}) },
   async analyze(taskId: string) { return submitOperation(`/tasks/${taskId}/analysis`, {}) },
-  async suggest(taskId: string, analysisId?: string) { return submitOperation(`/tasks/${taskId}/suggestions`, { analysis_id: analysisId || null, member_context: '' }) },
+  async suggest(taskId: string, analysisId: string, decisions: SuggestionDecisionInput[]) { return submitOperation(`/tasks/${taskId}/suggestions`, { analysis_id: analysisId, suggestion_decisions: decisionPayload(decisions), member_context: '' }) },
   async decideSuggestion(taskId: string, suggestionId: string, selected: boolean, note?: string) { await apiRequest(`/tasks/${taskId}/suggestions/${suggestionId}`, { method: 'PATCH', body: JSON.stringify({ decision: selected ? 'accepted' : 'rejected', member_note: note || null }) }) },
-  async firstDraft(taskId: string, analysisId?: string, memberRequirements = '') { return submitOperation(`/tasks/${taskId}/first-draft`, { analysis_id: analysisId || null, member_requirements: memberRequirements }) },
-  async regenerateFromSuggestions(taskId: string, parentVersionId: string, analysisId?: string, memberRequirements = '') { return submitOperation(`/tasks/${taskId}/revisions`, { parent_version_id: parentVersionId, scope: 'suggestions', instruction: memberRequirements.trim() || '按当前优化方案重新生成', analysis_id: analysisId || null, selection_start: null, selection_end: null }) },
+  async firstDraft(taskId: string, analysisId: string, decisions: SuggestionDecisionInput[], memberRequirements = '') { return submitOperation(`/tasks/${taskId}/first-draft`, { analysis_id: analysisId, suggestion_decisions: decisionPayload(decisions), member_requirements: memberRequirements }) },
+  async regenerateFromSuggestions(taskId: string, parentVersionId: string, analysisId: string, decisions: SuggestionDecisionInput[], memberRequirements = '') { return submitOperation(`/tasks/${taskId}/revisions`, { parent_version_id: parentVersionId, scope: 'suggestions', instruction: memberRequirements.trim() || '按当前优化方案重新生成', analysis_id: analysisId, suggestion_decisions: decisionPayload(decisions), selection_start: null, selection_end: null }) },
   async revise(taskId: string, payload: { parentVersionId: string; instruction: string; selection?: { start: number; end: number } }) { return submitOperation(`/tasks/${taskId}/revisions`, { parent_version_id: payload.parentVersionId, instruction: payload.instruction, scope: payload.selection ? 'selection' : 'full', selection_start: payload.selection?.start ?? null, selection_end: payload.selection?.end ?? null }) },
   async manualEdit(taskId: string, versionId: string, content: string) { return mapVersion(await apiRequest(`/tasks/${taskId}/versions/${versionId}/manual-edit`, { method: 'POST', body: JSON.stringify({ content, instruction: '成员手工编辑' }) })) },
   async compareVersions(taskId: string, leftVersionId: string, rightVersionId: string) { const value = object(await apiRequest(`/tasks/${taskId}/versions/compare`, { method: 'POST', body: JSON.stringify({ left_version_id: leftVersionId, right_version_id: rightVersionId }) })); return text(value.diff) },

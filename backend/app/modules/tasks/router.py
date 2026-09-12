@@ -501,6 +501,7 @@ async def get_analyses(
     tags=["ai-workflow"],
 )
 async def submit_suggestions(
+    request: Request,
     task_id: UUID,
     payload: SuggestionsSubmit,
     member: Annotated[Member, Depends(get_current_member)],
@@ -510,7 +511,8 @@ async def submit_suggestions(
     task = await _owned_task(session, task_id, member.id)
     return await _execute_ai(
         AiQueueService(session).submit(
-            task, member.id, AiOperationKind.SUGGESTIONS, payload, idempotency_key
+            task, member.id, AiOperationKind.SUGGESTIONS, payload, idempotency_key,
+            getattr(request.state, "request_id", None),
         )
     )
 
@@ -584,6 +586,7 @@ async def get_suggestions(
     tags=["ai-workflow"],
 )
 async def submit_first_draft(
+    request: Request,
     task_id: UUID,
     payload: FirstDraftSubmit,
     member: Annotated[Member, Depends(get_current_member)],
@@ -593,7 +596,8 @@ async def submit_first_draft(
     task = await _owned_task(session, task_id, member.id)
     return await _execute_ai(
         AiQueueService(session).submit(
-            task, member.id, AiOperationKind.FIRST_DRAFT, payload, idempotency_key
+            task, member.id, AiOperationKind.FIRST_DRAFT, payload, idempotency_key,
+            getattr(request.state, "request_id", None),
         )
     )
 
@@ -605,6 +609,7 @@ async def submit_first_draft(
     tags=["ai-workflow"],
 )
 async def submit_revision(
+    request: Request,
     task_id: UUID,
     payload: RevisionSubmit,
     member: Annotated[Member, Depends(get_current_member)],
@@ -614,7 +619,8 @@ async def submit_revision(
     task = await _owned_task(session, task_id, member.id)
     return await _execute_ai(
         AiQueueService(session).submit(
-            task, member.id, AiOperationKind.REVISION, payload, idempotency_key
+            task, member.id, AiOperationKind.REVISION, payload, idempotency_key,
+            getattr(request.state, "request_id", None),
         )
     )
 

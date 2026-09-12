@@ -8,6 +8,7 @@ import SettingsPage from '../features/settings/SettingsPage.vue'
 import MemberAdminPage from '../features/admin/MemberAdminPage.vue'
 import WorkbenchPage from '../features/workbench/WorkbenchPage.vue'
 import PresetManagementPage from '../features/presets/PresetManagementPage.vue'
+import { saveReturnTo } from '../features/auth/returnTo'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -34,4 +35,11 @@ router.beforeEach((to) => {
   if (to.meta.admin && session.member?.role !== 'admin') return '/tasks'
 })
 
-window.addEventListener('dc:unauthorized', () => { void router.replace('/login') })
+let handlingUnauthorized = false
+window.addEventListener('dc:unauthorized', () => {
+  if (handlingUnauthorized || router.currentRoute.value.path === '/login') return
+  handlingUnauthorized = true
+  saveReturnTo(router.currentRoute.value.fullPath)
+  useSessionStore().expire()
+  void router.replace({ path: '/login', query: { expired: '1' } }).finally(() => { handlingUnauthorized = false })
+})

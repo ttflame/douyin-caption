@@ -1,5 +1,6 @@
 """Durable, member-scoped submission and queue controls."""
 
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -16,7 +17,7 @@ from app.modules.tasks.domain import (
     TaskState,
     assert_transition,
 )
-from app.modules.tasks.models import AiOperation, RewriteTask
+from app.modules.tasks.models import AiOperation, AnalysisRecord, RewriteTask, SuggestionRecord
 from app.modules.tasks.schemas import (
     AnalysisSubmit,
     FirstDraftSubmit,
@@ -31,6 +32,7 @@ PAYLOAD_TYPES = {
     AiOperationKind.REVISION: RevisionSubmit,
 }
 ACTIVE_STATUSES = (AiOperationStatus.QUEUED, AiOperationStatus.RUNNING)
+logger = logging.getLogger(__name__)
 
 
 class AiQueueService:
@@ -44,6 +46,7 @@ class AiQueueService:
         kind: AiOperationKind,
         payload: BaseModel,
         idempotency_key: str | None,
+        request_id: str | None = None,
     ) -> AiOperation:
         if task.owner_id != owner_id:
             raise TaskAiExecutionError("task_not_found", "文案不存在", 404)
@@ -72,6 +75,9 @@ class AiQueueService:
             select(ProviderSetting.id).where(ProviderSetting.member_id == owner_id)
         ):
             raise TaskAiExecutionError("provider_setting_not_found", "请先配置模型连接", 409)
+        await self._apply_suggestion_snapshot(task.id, kind, payload)
+        initial_state = TaskState(task.state)
+        running_state = _running_state(kind)
         operation = AiOperation(
             owner_id=owner_id,
             task_id=task.id,
@@ -81,13 +87,15 @@ class AiQueueService:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             request_payload=data,
-            initial_task_state=task.state,
-            running_task_state=_running_state(kind),
+            request_id=request_id,
+            initial_task_state=initial_state,
+            running_task_state=running_state,
             error_details={},
             created_at=datetime.now(UTC),
             started_at=None,
         )
         self.session.add(operation)
+        task.state = running_state
         task_id = task.id
         try:
             await self.session.commit()
@@ -100,7 +108,67 @@ class AiQueueService:
                 "ai_operation_in_progress", "该文案已有排队或执行中的任务", 409
             ) from exc
         await self.session.refresh(operation)
+        logger.info(
+            "AI operation queued request_id=%s operation_id=%s task_id=%s owner_id=%s kind=%s",
+            request_id,
+            operation.id,
+            task.id,
+            owner_id,
+            kind,
+        )
         return operation
+
+    async def _apply_suggestion_snapshot(
+        self, task_id: UUID, kind: AiOperationKind, payload: BaseModel
+    ) -> None:
+        decisions = getattr(payload, "suggestion_decisions", None)
+        analysis_id = getattr(payload, "analysis_id", None)
+        if kind == AiOperationKind.REVISION and getattr(payload, "scope", None) != "suggestions":
+            return
+        if kind not in (
+            AiOperationKind.SUGGESTIONS,
+            AiOperationKind.FIRST_DRAFT,
+            AiOperationKind.REVISION,
+        ):
+            return
+        if decisions is None or analysis_id is None:
+            raise TaskAiExecutionError(
+                "suggestion_snapshot_stale", "方案已更新，请确认当前选择", 409
+            )
+        analysis = await self.session.scalar(
+            select(AnalysisRecord)
+            .where(
+                AnalysisRecord.id == analysis_id,
+                AnalysisRecord.task_id == task_id,
+                AnalysisRecord.is_selected.is_(True),
+            )
+            .with_for_update()
+        )
+        if analysis is None:
+            raise TaskAiExecutionError(
+                "suggestion_snapshot_stale", "方案已更新，请确认当前选择", 409
+            )
+        records = list(
+            (
+                await self.session.scalars(
+                    select(SuggestionRecord)
+                    .where(
+                        SuggestionRecord.task_id == task_id,
+                        SuggestionRecord.analysis_id == analysis_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        submitted = {item.suggestion_id: item for item in decisions}
+        if set(submitted) != {item.id for item in records}:
+            raise TaskAiExecutionError(
+                "suggestion_snapshot_stale", "方案已更新，请确认当前选择", 409
+            )
+        for record in records:
+            decision = submitted[record.id]
+            record.decision = "accepted" if decision.selected else "rejected"
+            record.member_note = decision.member_note
 
     async def _existing(self, task_id, owner_id, kind, key, request_hash):
         if key is None:
@@ -164,6 +232,7 @@ class AiQueueService:
 
     async def cancel(self, owner_id: UUID, operation_id: UUID) -> AiOperation:
         operation = await self.owned(owner_id, operation_id)
+        task = await self.session.get(RewriteTask, operation.task_id)
         changed = await self.session.execute(
             update(AiOperation)
             .where(AiOperation.id == operation.id, AiOperation.status == AiOperationStatus.QUEUED)
@@ -173,6 +242,8 @@ class AiQueueService:
             raise TaskAiExecutionError(
                 "operation_not_queued", "任务已开始或结束，无法取消排队", 409
             )
+        if task is not None and task.state == operation.running_task_state:
+            task.state = operation.initial_task_state
         await self.session.commit()
         await self.session.refresh(operation)
         return operation
@@ -191,4 +262,5 @@ class AiQueueService:
             AiOperationKind(operation.kind),
             PAYLOAD_TYPES[operation.kind].model_validate(operation.request_payload),
             key,
+            operation.request_id,
         )

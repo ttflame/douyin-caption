@@ -183,20 +183,59 @@ class AnalysisView(BaseModel):
     created_at: datetime
 
 
+class SuggestionDecisionSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    suggestion_id: UUID
+    selected: bool
+    member_note: str | None = Field(default=None, max_length=2_000)
+
+    @model_validator(mode="after")
+    def normalize_note(self) -> "SuggestionDecisionSubmit":
+        if self.member_note is not None:
+            self.member_note = self.member_note.strip() or None
+        return self
+
+
 class SuggestionsSubmit(BaseModel):
-    analysis_id: UUID | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_id: UUID
+    suggestion_decisions: list[SuggestionDecisionSubmit] = Field(max_length=100)
     member_context: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="after")
+    def validate_unique_suggestions(self) -> "SuggestionsSubmit":
+        ids = [item.suggestion_id for item in self.suggestion_decisions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Suggestion IDs must be unique")
+        return self
 
 
 class FirstDraftSubmit(BaseModel):
-    analysis_id: UUID | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_id: UUID
+    suggestion_decisions: list[SuggestionDecisionSubmit] = Field(max_length=100)
     member_requirements: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="after")
+    def validate_unique_suggestions(self) -> "FirstDraftSubmit":
+        ids = [item.suggestion_id for item in self.suggestion_decisions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Suggestion IDs must be unique")
+        return self
 
 
 class RevisionSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     parent_version_id: UUID
     scope: str = Field(pattern="^(full|selection|suggestions)$")
     analysis_id: UUID | None = None
+    suggestion_decisions: list[SuggestionDecisionSubmit] | None = Field(
+        default=None, max_length=100
+    )
     instruction: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000)
     ]
@@ -214,6 +253,14 @@ class RevisionSubmit(BaseModel):
             raise ValueError("Selection offsets are only valid for a selection revision")
         if self.scope != "suggestions" and self.analysis_id is not None:
             raise ValueError("Analysis ID is only valid for a suggestion regeneration")
+        if self.scope == "suggestions":
+            if self.analysis_id is None or self.suggestion_decisions is None:
+                raise ValueError("Suggestion revisions require an analysis and decision snapshot")
+            ids = [item.suggestion_id for item in self.suggestion_decisions]
+            if len(ids) != len(set(ids)):
+                raise ValueError("Suggestion IDs must be unique")
+        elif self.suggestion_decisions is not None:
+            raise ValueError("Suggestion decisions are only valid for a suggestion regeneration")
         return self
 
 

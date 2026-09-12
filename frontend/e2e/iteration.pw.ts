@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 
-test('keeps selected suggestions and sentence locks through repeated generation', async ({ page }, testInfo) => {
+test('keeps selected suggestions and sentence locks through repeated generation', async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+  const page = await context.newPage()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.addInitScript(() => {
     localStorage.setItem('dc_token', 'test-session')
@@ -21,17 +23,13 @@ test('keeps selected suggestions and sentence locks through repeated generation'
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     const method = route.request().method()
     const send = (data: unknown, status = 200) => route.fulfill({ status, json: data })
+    if (path === '/client-events') return route.fulfill({ status: 204 })
     if (path === '/operations') return send(operations)
     if (path === '/tasks/alpha') return send(task)
     if (path === '/tasks/alpha/versions') return send(versions)
     if (path === '/tasks/alpha/analyses') return send([{ id: 'analysis', is_selected: true, payload: { content: '结构分析' } }])
     if (path === '/tasks/alpha/locks') return send(locks)
     if (path === '/tasks/alpha/suggestions' && method === 'GET') return send(suggestions)
-    if (path.startsWith('/tasks/alpha/suggestions/') && method === 'PATCH') {
-      await new Promise(resolve => setTimeout(resolve, 250))
-      Object.assign(suggestions.find(item => item.id === path.split('/').at(-1))!, route.request().postDataJSON())
-      return send({})
-    }
     if (path.endsWith('/manual-edit')) {
       const payload = route.request().postDataJSON()
       const version = { id: `v${versions.length + 1}`, kind: 'manual_edit', content: payload.content, parent_id: path.split('/')[4]!, created_at: new Date().toISOString() }
@@ -51,9 +49,13 @@ test('keeps selected suggestions and sentence locks through repeated generation'
       return route.fulfill({ status: 204 })
     }
     if (method === 'POST' && ['/tasks/alpha/suggestions', '/tasks/alpha/first-draft', '/tasks/alpha/revisions'].includes(path)) {
+      const payload = route.request().postDataJSON()
+      for (const decision of payload.suggestion_decisions ?? []) {
+        const item = suggestions.find(row => row.id === decision.suggestion_id)
+        if (item) Object.assign(item, { decision: decision.selected ? 'accepted' : 'rejected', member_note: decision.member_note })
+      }
       const kind = path.endsWith('suggestions') ? 'suggestions' : path.endsWith('first-draft') ? 'first_draft' : 'revision'
       if (kind === 'revision') {
-        const payload = route.request().postDataJSON()
         revisionParent = payload.parent_version_id
         revisionScopes.push(payload.scope)
       }
@@ -67,12 +69,11 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   await page.getByRole('checkbox').first().check()
   await page.getByRole('checkbox').first().uncheck()
   await page.getByRole('checkbox').nth(1).check()
-  await expect(page.getByText('已固定 1 项', { exact: true })).toBeVisible()
-  await expect.poll(() => suggestions[0]!.decision).toBe('rejected')
-  await expect.poll(() => suggestions[1]!.decision).toBe('accepted')
+  await expect(page.getByText('已选择 1 项', { exact: true })).toBeVisible()
+  expect(suggestions.every(item => item.decision === 'pending')).toBe(true)
   await page.getByRole('checkbox').first().check()
-  await expect(page.getByText('已固定 2 项', { exact: true })).toBeVisible()
-  await expect.poll(() => suggestions.filter(item => item.decision === 'accepted').length).toBe(2)
+  await expect(page.getByText('已选择 2 项', { exact: true })).toBeVisible()
+  expect(suggestions.every(item => item.decision === 'pending')).toBe(true)
   await page.screenshot({ path: testInfo.outputPath('suggestions-mobile-multiselect.png'), fullPage: true })
   await page.setViewportSize({ width: 723, height: 698 })
   await page.getByRole('button', { name: '保留已选，继续优化', exact: true }).click()
@@ -111,9 +112,10 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   await expect(page.locator('.locked-sentence')).toHaveCount(2)
   await page.getByRole('button', { name: '优化方案' }).click()
   await page.getByRole('checkbox').first().uncheck()
-  await expect.poll(() => suggestions[0]!.decision).toBe('rejected')
+  expect(suggestions[0]!.decision).toBe('accepted')
   await page.getByRole('button', { name: '按当前方案生成新版本', exact: true }).click()
   await expect.poll(() => operations.length).toBe(4)
+  expect(suggestions[0]!.decision).toBe('rejected')
   expect(revisionParent).toBe('v3')
   expect(revisionScopes.at(-1)).toBe('suggestions')
   versions.push({ id: 'v4', kind: 'ai_revision', parent_id: 'v3', content: '按方案生成的新稿。补充一句。🙂开头说明问题。', created_at: new Date().toISOString() })
@@ -134,4 +136,5 @@ test('keeps selected suggestions and sentence locks through repeated generation'
   await page.getByRole('button', { name: '成品修改' }).click()
   await page.getByRole('button', { name: '取消保留：补充一句。', exact: true }).click()
   await expect(page.locator('.locked-sentence')).toHaveCount(1)
+  await context.close()
 })

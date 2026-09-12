@@ -108,7 +108,7 @@ describe('high-value workflow endpoints', () => {
     vi.stubGlobal('localStorage', { getItem: () => null })
     vi.stubGlobal('fetch', fetchMock)
 
-    await api.regenerateFromSuggestions('task', 'version', 'analysis', '保持克制')
+    await api.regenerateFromSuggestions('task', 'version', 'analysis', [{ suggestionId: 's1', selected: true, memberNote: '保留' }], '保持克制')
 
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/tasks/task/revisions', expect.objectContaining({ method: 'POST' }))
     expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
@@ -116,6 +116,7 @@ describe('high-value workflow endpoints', () => {
       scope: 'suggestions',
       instruction: '保持克制',
       analysis_id: 'analysis',
+      suggestion_decisions: [{ suggestion_id: 's1', selected: true, member_note: '保留' }],
       selection_start: null,
       selection_end: null,
     })

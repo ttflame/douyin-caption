@@ -87,6 +87,13 @@ class AiQueueWorker:
                 if owner is None or not owner.is_active:
                     raise TaskAiExecutionError("member_disabled", "账户已停用，任务未执行", 403)
                 task = await session.get(RewriteTask, operation.task_id)
+                logger.info(
+                    "AI operation started request_id=%s operation_id=%s task_id=%s owner_id=%s",
+                    operation.request_id,
+                    operation.id,
+                    operation.task_id,
+                    operation.owner_id,
+                )
                 payload = PAYLOAD_TYPES[operation.kind].model_validate(operation.request_payload)
                 method = {
                     "analysis": service.analyze,
@@ -94,7 +101,16 @@ class AiQueueWorker:
                     "first_draft": service.create_first_draft,
                     "revision": service.revise,
                 }[operation.kind]
-                await method(task, operation.owner_id, payload, None)
+                completed = await method(task, operation.owner_id, payload, None)
+                logger.info(
+                    "AI operation completed request_id=%s operation_id=%s task_id=%s "
+                    "owner_id=%s status=%s",
+                    operation.request_id,
+                    operation.id,
+                    operation.task_id,
+                    operation.owner_id,
+                    completed.status,
+                )
             except (MemberAiCallBusyError, AiLockUnavailableError):
                 # Leave work queued until the member lease becomes available.
                 await session.rollback()
@@ -111,6 +127,25 @@ class AiQueueWorker:
                     exc.message if isinstance(exc, TaskAiExecutionError) else "任务执行失败，请重试"
                 )
                 # Execution records its own failures; handle errors during preparation here.
+                saved_operation = await session.get(AiOperation, operation_id)
+                if saved_operation is not None:
+                    logger.warning(
+                        "AI operation failed request_id=%s operation_id=%s task_id=%s "
+                        "owner_id=%s code=%s",
+                        saved_operation.request_id,
+                        saved_operation.id,
+                        saved_operation.task_id,
+                        saved_operation.owner_id,
+                        code,
+                    )
+                    await session.execute(
+                        update(RewriteTask)
+                        .where(
+                            RewriteTask.id == saved_operation.task_id,
+                            RewriteTask.state == saved_operation.running_task_state,
+                        )
+                        .values(state=saved_operation.initial_task_state)
+                    )
                 await session.execute(
                     update(AiOperation)
                     .where(
